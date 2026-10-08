@@ -17,7 +17,7 @@ catalog:
   # never gained a `vitest` bin entry, so `vp test` can't find one. From vite-plus
   # 0.2.x on, the toolchain depends on real `vitest` instead; keep this pinned to
   # the exact version vite-plus's own dependencies name, or `vp test` breaks.
-  vitest: 4.1.10
+  vitest: 4.1.11
   vite-plus: 0.2.7
 overrides:
   vite: "catalog:"
