@@ -71,13 +71,31 @@ function pageAt(pages: PageStart[], index: number): PageStart | undefined {
   return found;
 }
 
-/** First index, at or after `from`, where `needle` appears as a whole attribute value. */
-function findAttrValue(html: string, needle: string, from: number): number {
-  for (const q of ['"', "'"]) {
-    const i = html.indexOf(q + needle + q, from);
-    if (i >= 0) return i;
+/** A run of these, between matching quotes, is the shape of every clip id and file name. */
+const QUOTED_NAME = /(["'])([\w.-]+)(?=\1)/g;
+const NAME = /^[\w.-]+$/;
+
+/**
+ * Finds where a name first appears as a whole quoted value, at or after `from`, the way
+ * `html.indexOf('"' + name + '"', from)` would, then the same with single quotes. A book
+ * can have thousands of clips in megabytes of markup, so names of the usual shape are
+ * looked up in one pass over the markup instead of a search per name.
+ */
+function attrValueFinder(html: string, from: number): (name: string) => number {
+  const first = { '"': new Map<string, number>(), "'": new Map<string, number>() };
+  QUOTED_NAME.lastIndex = from;
+  for (let m = QUOTED_NAME.exec(html); m; m = QUOTED_NAME.exec(html)) {
+    const seen = first[m[1] as '"' | "'"];
+    if (!seen.has(m[2])) seen.set(m[2], m.index);
   }
-  return -1;
+  return (name) => {
+    if (NAME.test(name)) return first['"'].get(name) ?? first["'"].get(name) ?? -1;
+    for (const q of ['"', "'"]) {
+      const i = html.indexOf(q + name + q, from);
+      if (i >= 0) return i;
+    }
+    return -1;
+  };
 }
 
 /**
@@ -90,13 +108,14 @@ export function labelClips(html: string, files: string[]): Map<string, ClipLabel
   const firstPage = pages[0]?.index ?? 0;
   const found: { file: string; index: number; music: boolean }[] = [];
   const out = new Map<string, ClipLabel>();
+  // Search from the first page so the data-div copy of a reference doesn't win.
+  const findAttrValue = attrValueFinder(html, firstPage);
 
   for (const file of files) {
     const id = file.replace(/\.[^.]+$/, "");
-    // Search from the first page so the data-div copy of a reference doesn't win.
-    let index = findAttrValue(html, id, firstPage);
+    let index = findAttrValue(id);
     let music = false;
-    const bg = findAttrValue(html, file, firstPage);
+    const bg = findAttrValue(file);
     if (bg >= 0 && html.slice(Math.max(0, bg - 21), bg).endsWith("data-backgroundaudio=")) {
       index = bg;
       music = true;

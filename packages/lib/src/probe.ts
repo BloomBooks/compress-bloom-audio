@@ -1,10 +1,12 @@
-/* Reading an audio file's duration, bitrate and channel count. Bloom's ffmpeg has no
-   ffprobe, so we run `ffmpeg -i <file>` with no output and read the summary it prints
-   to stderr before complaining that no output file was given:
+/* Reading an audio file's duration, bitrate and channel count. An mp3's own headers
+   usually give all three (mp3Header.ts). Otherwise, since Bloom's ffmpeg has no ffprobe,
+   we run `ffmpeg -i <file>` with no output and read the summary it prints to stderr
+   before complaining that no output file was given:
 
      Duration: 00:03:24.79, start: 0.000000, bitrate: 128 kb/s
      Stream #0:0: Audio: mp3 (mp3float), 48000 Hz, stereo, fltp, 128 kb/s */
 import { runFfmpeg } from "./ffmpeg";
+import { readMp3Info } from "./mp3Header";
 
 export interface AudioInfo {
   durationSec: number;
@@ -34,7 +36,12 @@ export function parseFfmpegInfo(stderr: string): AudioInfo | null {
   return { durationSec, kbps, channels, sampleRate: Number(rate?.[1] ?? 0) };
 }
 
+/** Reads an mp3's own headers when it can, and asks ffmpeg otherwise. */
 export async function probeAudio(ffmpeg: string, file: string): Promise<AudioInfo | null> {
+  if (file.toLowerCase().endsWith(".mp3")) {
+    const info = await readMp3Info(file).catch(() => null);
+    if (info) return info;
+  }
   const r = await runFfmpeg(ffmpeg, ["-hide_banner", "-nostdin", "-i", file]);
   return parseFfmpegInfo(r.stderr);
 }

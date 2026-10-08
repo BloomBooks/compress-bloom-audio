@@ -13,6 +13,7 @@ import {
   defaultBackupRoot,
   findFfmpeg,
   isBloomCollection,
+  scanBook,
   scanCollection,
   type Book,
   type Clip,
@@ -69,6 +70,8 @@ export interface EngineState {
   } | null;
   /** The outcome of the last Restore, until the next action. */
   lastRestore: RestoreResult | null;
+  /** While a scan runs: how many clips have been read, out of how many. */
+  scanProgress: { folder: string; done: number; total: number } | null;
   error: string | null;
 }
 
@@ -127,6 +130,7 @@ let state: EngineState = {
   encoding: null,
   lastCompress: null,
   lastRestore: null,
+  scanProgress: null,
   error: null,
 };
 let abort: AbortController | null = null;
@@ -197,43 +201,78 @@ export async function ensureFfmpeg(): Promise<string | null> {
   return state.ffmpeg;
 }
 
+/** Attach each clip's kept original, if it still applies. */
+async function withOriginals(b: Book, s: BackupStore): Promise<GuiBook> {
+  const clips: GuiClip[] = [];
+  for (const clip of b.clips) {
+    const o = await s.validOriginal(b.id, b.folder, clip.file);
+    clips.push(
+      o
+        ? {
+            ...clip,
+            original: {
+              bytes: o.originalBytes,
+              kbps: o.originalKbps,
+              currentKbps: o.currentKbps,
+            },
+          }
+        : clip,
+    );
+  }
+  return { ...b, clips };
+}
+
+function showScanProgress(folder: string, done: number, total: number) {
+  state = { ...state, scanProgress: { folder, done, total } };
+  push();
+}
+
 /** Scan the collection and attach each clip's kept original, if it still applies. */
 async function scan(ffmpeg: string, folder: string, s: BackupStore): Promise<GuiCollection> {
-  const c = await scanCollection(ffmpeg, folder);
+  const c = await scanCollection(ffmpeg, folder, (done, total) =>
+    showScanProgress(folder, done, total),
+  );
   const books: GuiBook[] = [];
-  for (const b of c.books) {
-    const clips: GuiClip[] = [];
-    for (const clip of b.clips) {
-      const o = await s.validOriginal(b.id, b.folder, clip.file);
-      clips.push(
-        o
-          ? {
-              ...clip,
-              original: {
-                bytes: o.originalBytes,
-                kbps: o.originalKbps,
-                currentKbps: o.currentKbps,
-              },
-            }
-          : clip,
-      );
-    }
-    books.push({ ...b, clips });
-  }
+  for (const b of c.books) books.push(await withOriginals(b, s));
   return { ...c, books };
 }
 
-async function rescan(patch: Partial<EngineState> = {}) {
+/** Read again the books a compress or restore just changed; the rest can't have changed. */
+async function rescan(bookIds: string[], patch: Partial<EngineState> = {}) {
   const collection = state.collection;
-  if (!collection || !state.ffmpeg) return;
-  set({ phase: "scanning" });
-  const fresh = await scan(state.ffmpeg, collection.folder, store!);
+  const ffmpeg = state.ffmpeg;
+  if (!collection || !ffmpeg) return;
+  const targets = collection.books.filter((b) => bookIds.includes(b.id));
+  const total = targets.reduce((n, b) => n + b.clips.length, 0);
+  let done = 0;
+  set({ phase: "scanning", scanProgress: { folder: collection.folder, done, total } });
+  const fresh = new Map<string, GuiBook | null>();
+  try {
+    for (const b of targets) {
+      const book = await scanBook(ffmpeg, b.folder, () =>
+        showScanProgress(collection.folder, ++done, total),
+      );
+      fresh.set(b.id, book && (await withOriginals(book, store!)));
+    }
+  } catch (e) {
+    set({
+      ...patch,
+      phase: "idle",
+      scanProgress: null,
+      error: `Couldn't read the books again: ${(e as Error).message}`,
+    });
+    throw e;
+  }
+  const books = collection.books
+    .map((b) => (fresh.has(b.id) ? fresh.get(b.id)! : b))
+    .filter((b): b is GuiBook => b !== null);
   set({
     ...patch,
-    collection: fresh,
-    restorableBookIds: await store!.restorableBookIds(fresh.books),
+    collection: { ...collection, books },
+    restorableBookIds: await store!.restorableBookIds(books),
     clips: {},
     job: null,
+    scanProgress: null,
     phase: "idle",
   });
 }
@@ -266,10 +305,15 @@ export async function openCollection(folder: string): Promise<void> {
       previews: {},
       lastCompress: null,
       lastRestore: null,
+      scanProgress: null,
       phase: "idle",
     });
   } catch (e) {
-    set({ phase: "idle", error: `Couldn't read ${folder}: ${(e as Error).message}` });
+    set({
+      phase: "idle",
+      scanProgress: null,
+      error: `Couldn't read ${folder}: ${(e as Error).message}`,
+    });
     throw e;
   }
 }
@@ -405,7 +449,7 @@ async function replaceFinished(books: GuiBook[], kbps: number, dir: string) {
       changed.add(book.id);
     }
   }
-  await rescan({
+  await rescan([...changed], {
     lastCompress: {
       kbps,
       books: changed.size,
@@ -447,6 +491,7 @@ export async function preview(bookId: string, file: string, kbps: number): Promi
 export async function restore(): Promise<void> {
   requireIdle();
   if (!store || !state.collection) throw new Error("no collection open");
+  const restoring = state.restorableBookIds;
   set({ phase: "restoring", lastCompress: null, lastRestore: null, error: null });
   let result: RestoreResult;
   try {
@@ -458,7 +503,7 @@ export async function restore(): Promise<void> {
   await rmDir(previewDir);
   previewDir = null;
   state.previews = {};
-  await rescan({ lastRestore: result });
+  await rescan(restoring, { lastRestore: result });
 }
 
 /**

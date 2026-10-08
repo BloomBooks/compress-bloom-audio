@@ -52,6 +52,7 @@ export interface EngineState {
     jobBookIds: string[];
     finishedAt: string;
   } | null;
+  scanProgress: { folder: string; done: number; total: number } | null;
   lastRestore: {
     restoredBooks: number;
     restoredClips: number;

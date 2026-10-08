@@ -52,6 +52,13 @@ describe("labelClips", () => {
     expect(l.get("old-take.mp3")).toMatchObject({ kind: "unused", label: "Not used in the book" });
   });
 
+  it("finds single-quoted ids and names with unusual characters", () => {
+    const page = `<div class="bloom-page" data-page-number="4"><span id='b1'>x</span><span id="my take (2)">y</span></div>`;
+    const l = labelClips(page, ["b1.mp3", "my take (2).mp3"]);
+    expect(l.get("b1.mp3")?.label).toBe("Page 4 · clip 1");
+    expect(l.get("my take (2).mp3")?.label).toBe("Page 4 · clip 2");
+  });
+
   it("falls back to 'not used' for everything when there is no markup", () => {
     expect(labelClips("", ["a1.mp3"]).get("a1.mp3")?.kind).toBe("unused");
   });

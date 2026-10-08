@@ -122,7 +122,11 @@ export function App() {
   const ph = state.phase;
   const locked = ph !== "idle";
   const kbps = settings.kbps;
-  const books = state.collection?.books ?? [];
+  // A collection being opened, as opposed to the open one being read again after a
+  // compress or restore. Its predecessor's rows would be stale, so they are hidden.
+  const loadingCollection =
+    ph === "scanning" && state.scanProgress?.folder !== state.collection?.folder;
+  const books = loadingCollection ? [] : (state.collection?.books ?? []);
 
   const run = (p: Promise<unknown>) => {
     setActionError(null);
@@ -438,6 +442,11 @@ export function App() {
             {ph === "restoring" && (
               <span style={{ fontSize: 13, color: "var(--app-text-muted)" }}>Restoring…</span>
             )}
+            {ph === "scanning" && !loadingCollection && (
+              <span style={{ fontSize: 13, color: "var(--app-text-muted)" }}>
+                Reading the changed books again…
+              </span>
+            )}
             {state.lastRestore && ph === "idle" && !askRestore && (
               <span style={{ fontSize: 13, color: "var(--sil-green-dark)" }}>
                 Original audio restored in {plural(state.lastRestore.restoredBooks, "book")}
@@ -497,8 +506,10 @@ export function App() {
                 </HeaderCell>
               ))}
             </div>
-            {ph === "scanning" && !books.length && (
-              <Centered>Reading the books in this collection…</Centered>
+            {loadingCollection && (
+              <Centered>
+                <ScanProgress progress={state.scanProgress} />
+              </Centered>
             )}
             {ph !== "scanning" && state.collection && !books.length && (
               <Centered>None of the books in this collection have recorded audio.</Centered>
@@ -906,6 +917,43 @@ function Num({
     </div>
   );
 }
+function ScanProgress({ progress }: { progress: EngineState["scanProgress"] }) {
+  const total = progress?.total ?? 0;
+  const done = Math.min(progress?.done ?? 0, total);
+  return (
+    <div style={{ width: 320, maxWidth: "100%" }} role="status">
+      <div>Reading the books in this collection…</div>
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-valuenow={done}
+        style={{
+          height: 6,
+          margin: "12px 0 8px",
+          borderRadius: 3,
+          background: "var(--app-border)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            height: "100%",
+            width: total ? `${(100 * done) / total}%` : 0,
+            background: "var(--sil-green-dark)",
+            transition: "width 150ms linear",
+          }}
+        />
+      </div>
+      <div style={{ fontSize: 12 }}>
+        {total
+          ? `${done.toLocaleString()} of ${total.toLocaleString()} ${total === 1 ? "clip" : "clips"}`
+          : " "}
+      </div>
+    </div>
+  );
+}
+
 function Centered({ children }: { children: React.ReactNode }) {
   return (
     <div
