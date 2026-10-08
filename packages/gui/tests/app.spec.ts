@@ -62,6 +62,14 @@ async function expectSizesFit(page: Page) {
   expect(overflowing).toEqual([]);
 }
 
+const ticked = (page: Page, title: string) => row(page, title).getByRole("checkbox");
+
+/** Tick every book (the header checkbox; its input is visually hidden, so click its label). */
+async function tickAll(page: Page) {
+  await page.locator('label[for="all"]').click();
+  for (const t of [MOON, GOATS]) await expect(ticked(page, t)).toBeChecked();
+}
+
 async function expand(page: Page, title: string) {
   await row(page, title).getByRole("button", { name: title }).click();
 }
@@ -101,10 +109,18 @@ test("preview encodes one clip and leaves the book alone", async ({ page }) => {
   const before = await hashes(book(MOON));
   await expand(page, MOON);
   const c = clip(page, MOON, "a1.mp3");
-  await expect(c).toContainText("~"); // estimated until previewed
   await c.getByRole("button", { name: /preview/i }).click();
-  // Once encoded, the After size is the real one, so the estimate's "~" goes.
-  await expect(c).not.toContainText("~");
+  // Once encoded, the After size is the preview's real size.
+  const key = `${MOON}/a1.mp3@48`;
+  await expect
+    .poll(async () => (await (await page.request.get("/api/startup")).json()).state.previews[key])
+    .toBeGreaterThan(0);
+  const bytes = (await (await page.request.get("/api/startup")).json()).state.previews[key];
+  await expect(c.locator("[data-cell=after]")).toHaveText(
+    bytes >= 1024 * 1024
+      ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+      : `${Math.round(bytes / 1024)} KB`,
+  );
   expect(await hashes(book(MOON))).toEqual(before);
 });
 
@@ -117,6 +133,12 @@ test("compress replaces the audio, keeps originals outside the books, and restor
   await compressAll(page, 48);
   await expect(row(page, MOON)).toContainText("Compressed");
   await expect(row(page, GOATS)).toContainText("Compressed");
+  // A finished run unticks its books. Their Current size is now the compressed one, with
+  // the original's size shown under it.
+  await expect(ticked(page, MOON)).not.toBeChecked();
+  await expect(ticked(page, GOATS)).not.toBeChecked();
+  await expect(row(page, MOON).locator("[data-cell=current]").first()).toContainText("was ");
+  await expect(page.getByRole("button", { name: "Compress 0 books" })).toBeDisabled();
 
   // Every clip got smaller, and nothing was added to the book folders.
   const after = await sizes(book(MOON));
@@ -128,21 +150,22 @@ test("compress replaces the audio, keeps originals outside the books, and restor
   ]);
   expect(await fs.readdir(E2E_ENV.COMPRESS_BLOOM_AUDIO_BACKUPS)).toHaveLength(1);
 
-  // The just-compressed clips still show what they were, and every size fits its column.
+  // A compressed clip: Current is the compressed size, "was" the original's. Original and
+  // Current play exactly those two files. Compressing again at this setting would change
+  // nothing, so there is no Preview.
   await expand(page, MOON);
   const a1 = clip(page, MOON, "a1.mp3");
-  expect(await a1.locator("[data-cell=before]").innerText()).not.toBe(
-    await a1.locator("[data-cell=after]").innerText(),
-  );
+  await expect(a1.locator("[data-cell=current]")).toContainText("was ");
   await expectSizesFit(page);
-
-  // Its second button is now "After", and plays the compressed file now in the book;
-  // "Before" plays the original we kept.
-  await expect(a1.getByRole("button", { name: "Play after" })).toBeVisible();
   await expect(a1.getByRole("button", { name: /preview/i })).toHaveCount(0);
-  expect(await playedBytes(page, a1, "Play after", "after")).toBe(after["a1.mp3"]);
-  expect(await playedBytes(page, a1, "Play before", "before")).toBe(originalSizes["a1.mp3"]);
+  expect(await playedBytes(page, a1, "Play current", "current")).toBe(after["a1.mp3"]);
+  expect(await playedBytes(page, a1, "Play original", "original")).toBe(originalSizes["a1.mp3"]);
 
+  // Pick another setting and Preview comes back, alongside Original and Current.
+  await page.getByRole("button", { name: /High quality/ }).click();
+  await expect(a1.getByRole("button", { name: /preview/i })).toBeVisible();
+  await expect(a1.getByRole("button", { name: "Play current" })).toBeVisible();
+  await page.getByRole("button", { name: /Balanced/ }).click();
   await page.getByRole("button", { name: "Restore original audio…" }).click();
   await expect(page.getByText("Put back the original recordings in 2 books?")).toBeVisible();
   await page.getByRole("button", { name: "Restore", exact: true }).click();
@@ -159,6 +182,7 @@ test("compressing again at another setting starts from the originals", async ({ 
   const at48 = await sizes(book(MOON));
 
   await page.getByRole("button", { name: /Speech/ }).click();
+  await tickAll(page);
   await expect(row(page, MOON)).toContainText("Ready · from originals");
   await compressAll(page, 24);
   const at24 = await sizes(book(MOON));
@@ -171,7 +195,17 @@ test("compressing again at another setting starts from the originals", async ({ 
     expect(at24[f] / originalSizes[f]).toBeLessThan(0.3);
   }
 
-  // A third run at the same setting has nothing to do.
+  // A third run at the same setting has nothing to do. Re-ticked books stay ticked through
+  // later updates from the server (here, a preview) until a new run finishes.
+  await tickAll(page);
+  // A preview at another bitrate makes the server push new state snapshots.
+  await page.request.post("/api/preview", { data: { book: GOATS, file: "g1.mp3", kbps: 96 } });
+  await expect
+    .poll(async () =>
+      Object.keys((await (await page.request.get("/api/startup")).json()).state.previews),
+    )
+    .toContain(`${GOATS}/g1.mp3@96`);
+  await expect(ticked(page, MOON)).toBeChecked();
   await compressAll(page, 24, /Nothing to compress: every clip is already at 24 kbps/);
   expect(await sizes(book(MOON))).toEqual(at24);
   // Every clip now reads "already at the target"; its sizes must still fit their columns.
@@ -195,5 +229,35 @@ test("restore leaves a clip alone that was recorded again after compressing", as
   expect((await hashes(book(GOATS)))["g1.mp3"]).toBe(original["g1.mp3"]);
   expect(await fs.readFile(path.join(book(GOATS).folder, "audio", "g2.mp3"), "utf8")).toBe(
     rerecorded,
+  );
+});
+
+test("columns can be dragged wider, and keep their width after a reload", async ({ page }) => {
+  const title = row(page, MOON).getByRole("button", { name: MOON });
+  const clips = page.getByText("Clips", { exact: true });
+  const widthBefore = (await title.boundingBox())!.width;
+  const clipsXBefore = (await clips.boundingBox())!.x;
+
+  const handle = page.locator('[data-resize="Book"]');
+  const h = (await handle.boundingBox())!;
+  await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(h.x + h.width / 2 + 120, h.y + h.height / 2, { steps: 6 });
+  await page.mouse.up();
+
+  // The Book column grew by the drag, and the columns after it moved right with it.
+  expect((await clips.boundingBox())!.x - clipsXBefore).toBeCloseTo(120, -1);
+  expect((await title.boundingBox())!.width).toBeGreaterThanOrEqual(widthBefore);
+
+  await page.reload();
+  expect(
+    (await page.getByText("Clips", { exact: true }).boundingBox())!.x - clipsXBefore,
+  ).toBeCloseTo(120, -1);
+
+  // Double-clicking the handle puts the default back.
+  await page.locator('[data-resize="Book"]').dblclick();
+  expect((await page.getByText("Clips", { exact: true }).boundingBox())!.x).toBeCloseTo(
+    clipsXBefore,
+    -1,
   );
 });

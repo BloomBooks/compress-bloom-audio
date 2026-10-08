@@ -56,23 +56,7 @@ export function clipAfter(
   return { bytes: estimateAfter(c, kbps), actual: false };
 }
 
-/**
- * The size a clip had before the last compress replaced it, when that compress covered
- * this book at this bitrate — so the result stays visible after the rescan, which makes
- * the compressed file the book's current audio (and every clip "already at" the target).
- */
-export function justCompressedBefore(
-  st: EngineState,
-  bookId: string,
-  file: string,
-  kbps: number,
-): number | undefined {
-  const lc = st.lastCompress;
-  if (!lc || st.phase === "running" || lc.kbps !== kbps || !lc.bookIds.includes(bookId))
-    return undefined;
-  return lc.beforeBytes[`${bookId}/${file}`];
-}
-
+/** The last run covered this book at this bitrate: its row says "Compressed". */
 export function wasJustCompressed(st: EngineState, bookId: string, kbps: number): boolean {
   const lc = st.lastCompress;
   return !!lc && st.phase !== "running" && lc.kbps === kbps && lc.bookIds.includes(bookId);
@@ -83,7 +67,13 @@ const finished = (s: ClipState | undefined) =>
 
 export interface BookRow {
   book: Book;
-  before: number;
+  /** What is in the book now. */
+  current: number;
+  /** What Bloom recorded: the kept originals, plus the clips never compressed. */
+  original: number;
+  /** Some clip in the book has been compressed by this app (so has a kept original). */
+  compressed: boolean;
+  /** At the chosen setting. */
   after: number;
   /** Every clip's after-size is known, not estimated. */
   actual: boolean;
@@ -97,7 +87,8 @@ export interface BookRow {
 export function bookRow(book: Book, st: EngineState, selected: boolean, kbps: number): BookRow {
   const inJob = !!st.job?.bookIds.includes(book.id);
   const k = inJob ? st.job!.kbps : kbps;
-  let before = 0;
+  let current = 0;
+  let original = 0;
   let after = 0;
   let done = 0;
   let actual = true;
@@ -107,7 +98,8 @@ export function bookRow(book: Book, st: EngineState, selected: boolean, kbps: nu
   for (const c of book.clips) {
     const s = inJob ? st.clips[`${book.id}/${c.file}`] : undefined;
     const a = clipAfter(c, s, k, st.previews[`${book.id}/${c.file}@${k}`]);
-    before += justCompressedBefore(st, book.id, c.file, kbps) ?? c.bytes;
+    current += c.bytes;
+    original += c.original?.bytes ?? c.bytes;
     after += a.bytes;
     actual &&= a.actual;
     anyFailed ||= s?.status === "failed";
@@ -117,7 +109,7 @@ export function bookRow(book: Book, st: EngineState, selected: boolean, kbps: nu
   const allUnchanged = book.clips.every((c) => isUnchanged(c, k));
   const wasCompressed = book.clips.some((c) => c.original);
   const unchangedLabel = wasCompressed ? `Already at ${k} kbps` : "Already small";
-  const progress = before ? done / before : 0;
+  const progress = current ? done / current : 0;
   let status: string;
   let statusTone: BookRow["statusTone"] = "muted";
 
@@ -145,7 +137,18 @@ export function bookRow(book: Book, st: EngineState, selected: boolean, kbps: nu
   } else {
     status = "Waiting";
   }
-  return { book, before, after, actual, running, progress, status, statusTone };
+  return {
+    book,
+    current,
+    original,
+    compressed: wasCompressed,
+    after,
+    actual,
+    running,
+    progress,
+    status,
+    statusTone,
+  };
 }
 
 export const TONE_COLOR: Record<BookRow["statusTone"], string> = {

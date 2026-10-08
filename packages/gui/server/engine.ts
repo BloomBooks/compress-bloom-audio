@@ -56,17 +56,16 @@ export interface EngineState {
   /** The clip being encoded for a preview, keyed `<bookId>/<file>`. */
   encoding: string | null;
   /** The outcome of the last compress, until the next action. */
-  /** The outcome of the last compress, until the next action: how many books changed,
-   *  what was saved, and each compressed clip's size before it was replaced (keyed
-   *  `<bookId>/<file>`), so the screen can still show before and after once the rescan
-   *  has made the compressed files the books' current audio. */
   lastCompress: {
     kbps: number;
     books: number;
     savedBytes: number;
     stopped: boolean;
     bookIds: string[];
-    beforeBytes: Record<string, number>;
+    /** Every book the run covered, including those with nothing to do. */
+    jobBookIds: string[];
+    /** When the run finished (ISO); tells one run's result from the next. */
+    finishedAt: string;
   } | null;
   /** The outcome of the last Restore, until the next action. */
   lastRestore: RestoreResult | null;
@@ -354,14 +353,12 @@ export async function startCompress(bookIds: string[], kbps: number): Promise<vo
 async function replaceFinished(books: GuiBook[], kbps: number, dir: string) {
   let savedBytes = 0;
   const changed = new Set<string>();
-  const beforeBytes: Record<string, number> = {};
   for (const book of books) {
     for (const clip of book.clips) {
       const s = state.clips[key(book.id, clip.file)];
       if (s?.status !== "done") continue;
       await store!.replace(book, clip.file, path.join(dir, book.id, clip.file), kbps, clip.kbps);
       savedBytes += clip.bytes - (s.afterBytes ?? clip.bytes);
-      beforeBytes[key(book.id, clip.file)] = clip.bytes;
       changed.add(book.id);
     }
   }
@@ -372,7 +369,8 @@ async function replaceFinished(books: GuiBook[], kbps: number, dir: string) {
       savedBytes,
       stopped: state.stopped,
       bookIds: [...changed],
-      beforeBytes,
+      jobBookIds: books.map((b) => b.id),
+      finishedAt: new Date().toISOString(),
     },
   });
 }
@@ -420,26 +418,27 @@ export async function restore(): Promise<void> {
   await rescan({ lastRestore: result });
 }
 
-/** The file behind a Before / After / Preview button, or null if there isn't one (yet). */
+/**
+ * The file behind a clip's listen buttons, or null if there isn't one (yet):
+ * - "original": what Bloom recorded — the kept original, or the book's file if this app
+ *   never compressed the clip;
+ * - "current": the file in the book now;
+ * - "after": a clip the running job has finished, before it replaces the book's file;
+ * - "preview": the clip encoded at `kbps`.
+ */
 export function clipFile(
   bookId: string,
   file: string,
-  which: "before" | "after" | "preview",
+  which: "original" | "current" | "after" | "preview",
   kbps: number,
 ): string | null {
   const book = state.collection?.books.find((b) => b.id === bookId);
   const clip = book?.clips.find((c) => c.file === file);
   if (!book || !clip) return null;
   const inBook = path.join(book.folder, "audio", file);
-  // Once a run has replaced this clip, the book holds the compressed audio: "after" is the
-  // book's file and "before" is the original we kept.
-  const justCompressed =
-    state.phase !== "running" && state.lastCompress?.beforeBytes[key(bookId, file)] !== undefined;
-  if (which === "before") {
-    return justCompressed && clip.original ? store!.originalPath(bookId, file) : inBook;
-  }
+  if (which === "current") return inBook;
+  if (which === "original") return clip.original ? store!.originalPath(bookId, file) : inBook;
   if (which === "after") {
-    if (justCompressed) return inBook;
     const s = state.clips[key(bookId, file)];
     if (s?.status === "skipped") return inBook;
     if (s?.status !== "done" || !workDir) return null;

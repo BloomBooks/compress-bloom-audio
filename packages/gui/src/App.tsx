@@ -5,6 +5,7 @@
 import React from "react";
 import { api, pickFolder, subscribeState, type Book, type EngineState, type Settings } from "./api";
 import { Button, Checkbox, Chevron } from "./components/primitives";
+import { COLUMNS, COLUMN_GAP, HeaderCell, useColumnWidths } from "./components/columns";
 import {
   PRESETS,
   TONE_COLOR,
@@ -13,16 +14,14 @@ import {
   fmtBytes,
   fmtDuration,
   isUnchanged,
-  justCompressedBefore,
   plural,
   type BookRow,
 } from "./model";
 
-const COLS = "32px minmax(0,1fr) 52px 80px 88px 60px 140px 132px";
 const PLAY = "M7 4 L19 12 L7 20 Z";
 const STOP = "M6 6 H18 V18 H6 Z";
 
-type Which = "before" | "after" | "preview";
+type Which = "original" | "current" | "after" | "preview";
 
 interface Playing {
   key: string;
@@ -72,9 +71,13 @@ export function App() {
   const [askRestore, setAskRestore] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const player = useAudioPlayer();
+  const cols = useColumnWidths();
+  const rowMinWidth = cols.minRowWidth + 40; // + the rows' 20 px side padding
   const stopPlayer = player.stop;
   const lastFolder = React.useRef<string | null>(null);
   const lastPhase = React.useRef<string | null>(null);
+  /** The `finishedAt` of the run whose books we last unticked. */
+  const deselectedRun = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     void api
@@ -102,6 +105,13 @@ export function App() {
     if (!state) return;
     if (state.phase !== lastPhase.current) stopPlayer();
     lastPhase.current = state.phase;
+    // A finished run unticks its books, once, so the next Compress is for whatever is
+    // left. Snapshots arrive as fresh objects, so runs are told apart by `finishedAt`.
+    const lc = state.lastCompress;
+    if (lc && state.phase === "idle" && lc.finishedAt !== deselectedRun.current) {
+      deselectedRun.current = lc.finishedAt;
+      setSelected((prev) => new Set([...prev].filter((id) => !lc.jobBookIds.includes(id))));
+    }
   }, [state, stopPlayer]);
 
   if (!state || !settings) {
@@ -137,11 +147,11 @@ export function App() {
   const totalRows = rows.filter((r) =>
     state.job ? state.job.bookIds.includes(r.book.id) : selected.has(r.book.id),
   );
-  const tb = totalRows.reduce((a, r) => a + r.before, 0);
+  const tb = totalRows.reduce((a, r) => a + r.current, 0);
   const ta = totalRows.reduce((a, r) => a + r.after, 0);
   const tc = totalRows.reduce((a, r) => a + r.book.clips.length, 0);
   const estimated = totalRows.some((r) => !r.actual);
-  const prog = totalRows.reduce((a, r) => a + r.before * r.progress, 0);
+  const prog = totalRows.reduce((a, r) => a + r.current * r.progress, 0);
   const pct = tb ? Math.round((prog / tb) * 100) : 0;
   const nSel = selected.size;
   const nRestorable = state.restorableBookIds.length;
@@ -416,38 +426,48 @@ export function App() {
 
         {/* Book table */}
         <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <div
-            style={{
-              flex: "none",
-              display: "grid",
-              gridTemplateColumns: COLS,
-              alignItems: "center",
-              padding: "0 20px",
-              height: 36,
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--app-text-muted)",
-              borderBottom: "1px solid var(--app-border)",
-              background: "var(--app-surface-2)",
-            }}
-          >
-            <Checkbox
-              id="all"
-              checked={allSelected}
-              disabled={locked || !books.length}
-              onChange={() =>
-                setSelected(allSelected ? new Set() : new Set(books.map((b) => b.id)))
-              }
-            />
-            <div>Book</div>
-            <div style={{ textAlign: "right" }}>Clips</div>
-            <div style={{ textAlign: "right" }}>Before</div>
-            <div style={{ textAlign: "right" }}>After</div>
-            <div style={{ textAlign: "right" }}>Saved</div>
-            <div style={{ paddingLeft: 16 }}>Listen</div>
-            <div>Status</div>
-          </div>
           <div style={{ flex: 1, overflow: "auto" }}>
+            {/* Inside the scrolling area, and sticky, so it scrolls sideways with the rows. */}
+            <div
+              style={{
+                position: "sticky",
+                top: 0,
+                zIndex: 1,
+                display: "grid",
+                gridTemplateColumns: cols.template,
+                columnGap: COLUMN_GAP,
+                minWidth: rowMinWidth,
+                alignItems: "center",
+                padding: "0 20px",
+                height: 36,
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--app-text-muted)",
+                borderBottom: "1px solid var(--app-border)",
+                background: "var(--app-surface-2)",
+              }}
+            >
+              <Checkbox
+                id="all"
+                checked={allSelected}
+                disabled={locked || !books.length}
+                onChange={() =>
+                  setSelected(allSelected ? new Set() : new Set(books.map((b) => b.id)))
+                }
+              />
+              {COLUMNS.map((c, i) => (
+                <HeaderCell
+                  key={c.name}
+                  index={i}
+                  widths={cols.widths}
+                  setWidth={cols.setWidth}
+                  reset={cols.reset}
+                  align={i >= 1 && i <= 4 ? "right" : "left"}
+                >
+                  {c.name}
+                </HeaderCell>
+              ))}
+            </div>
             {ph === "scanning" && !books.length && (
               <Centered>Reading the books in this collection…</Centered>
             )}
@@ -463,14 +483,17 @@ export function App() {
               const b = r.book;
               const isOpen = expanded.has(b.id);
               const inJob = !!state.job?.bookIds.includes(b.id);
-              const showAfter = selected.has(b.id) || inJob;
+              const showAfter =
+                selected.has(b.id) || inJob || !!state.lastCompress?.bookIds.includes(b.id);
               const k = inJob ? state.job!.kbps : kbps;
               return (
                 <div key={b.id} data-book={b.id}>
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: COLS,
+                      gridTemplateColumns: cols.template,
+                      columnGap: COLUMN_GAP,
+                      minWidth: rowMinWidth,
                       alignItems: "center",
                       padding: "0 20px",
                       height: 44,
@@ -522,16 +545,17 @@ export function App() {
                     <div style={{ textAlign: "right", color: "var(--app-text-muted)" }}>
                       {b.clips.length}
                     </div>
-                    <Num>{fmtBytes(r.before)}</Num>
+                    <Num cell="current" originally={r.compressed ? r.original : undefined}>
+                      {fmtBytes(r.current)}
+                    </Num>
                     <Num color={r.actual && inJob ? "var(--app-text)" : "var(--app-text-muted)"}>
-                      {showAfter ? (r.actual ? "" : "~") + fmtBytes(r.after) : "—"}
+                      {showAfter ? fmtBytes(r.after) : "—"}
                     </Num>
                     <Num color="var(--sil-green-dark)">
-                      {showAfter && r.after < r.before
-                        ? "−" + Math.round((1 - r.after / r.before) * 100) + "%"
+                      {showAfter && r.after < r.current
+                        ? "−" + Math.round((1 - r.after / r.current) * 100) + "%"
                         : ""}
                     </Num>
-                    <div />
                     <div
                       style={{
                         display: "flex",
@@ -574,40 +598,31 @@ export function App() {
                       {b.clips.map((c) => {
                         const key = `${b.id}/${c.file}`;
                         const s = inJob ? state.clips[key] : undefined;
-                        // Set when the last run replaced this clip: its size before that run.
-                        const before = justCompressedBefore(state, b.id, c.file, kbps);
-                        const done =
-                          s?.status === "done" || s?.status === "skipped" || before !== undefined;
+                        const doneInRun = ph === "running" && s?.status === "done";
                         const unchanged = isUnchanged(c, k);
                         const previewBytes = state.previews[`${key}@${k}`];
                         const a = clipAfter(c, s, k, previewBytes);
                         const encoding = state.encoding === key;
-                        const canSecond = (done || ph === "idle") && !encoding && !state.encoding;
                         const p = player.playing?.key === key ? player.playing : null;
-                        const second: Which = done ? "after" : "preview";
-                        const afterText =
-                          before !== undefined
-                            ? fmtBytes(c.bytes)
-                            : s?.status === "failed"
-                              ? "Failed"
-                              : done
-                                ? fmtBytes(a.bytes)
-                                : unchanged
-                                  ? fmtBytes(c.bytes)
-                                  : (a.actual ? "" : "~") + fmtBytes(a.bytes);
-                        const playSecond = () => {
-                          if (!canSecond) return;
-                          if (done || unchanged || previewBytes !== undefined) {
-                            player.toggle(b, c.file, second, k, c.durationSec);
-                            return;
-                          }
+                        const timeOf = (w: Which) =>
+                          p?.which === w ? `${fmtDuration(p.t)} / ${fmtDuration(p.dur)}` : null;
+                        const play = (w: Which) => player.toggle(b, c.file, w, k, c.durationSec);
+                        // Preview is for a clip compressing would change; while a run is going,
+                        // a clip it has finished plays its new version as "After".
+                        const third: { label: string; which: Which } | null = doneInRun
+                          ? { label: "After", which: "after" }
+                          : unchanged
+                            ? null
+                            : { label: "Preview", which: "preview" };
+                        const canThird = !!third && (doneInRun || ph === "idle") && !state.encoding;
+                        const playThird = () => {
+                          if (!third || !canThird) return;
+                          if (third.which === "after" || previewBytes !== undefined)
+                            return play(third.which);
                           player.stop();
-                          run(
-                            api
-                              .preview(b.id, c.file, k)
-                              .then(() => player.toggle(b, c.file, "preview", k, c.durationSec)),
-                          );
+                          run(api.preview(b.id, c.file, k).then(() => play("preview")));
                         };
+                        const afterText = s?.status === "failed" ? "Failed" : fmtBytes(a.bytes);
                         return (
                           <div
                             key={c.file}
@@ -615,10 +630,12 @@ export function App() {
                             title={s?.error ?? c.file}
                             style={{
                               display: "grid",
-                              gridTemplateColumns: COLS,
+                              gridTemplateColumns: cols.template,
+                              columnGap: COLUMN_GAP,
+                              minWidth: rowMinWidth,
                               alignItems: "center",
                               padding: "0 20px",
-                              height: 36,
+                              minHeight: 36,
                               fontSize: 13,
                               color: "var(--app-text-muted)",
                             }}
@@ -635,46 +652,50 @@ export function App() {
                               {c.label}
                             </div>
                             <div style={{ textAlign: "right" }}>{fmtDuration(c.durationSec)}</div>
-                            <Num cell="before">{fmtBytes(before ?? c.bytes)}</Num>
-                            <Num
-                              cell="after"
-                              color={s?.status === "failed" ? "var(--sil-red)" : undefined}
-                            >
-                              {afterText}
-                            </Num>
-                            <div />
                             <div
-                              style={{
-                                paddingLeft: 16,
-                                gridColumn: "span 2",
-                                display: "flex",
-                                gap: 6,
-                              }}
+                              data-cell="current"
+                              style={{ textAlign: "right", lineHeight: 1.2 }}
                             >
-                              <PlayButton
-                                label="Before"
-                                active={p?.which === "before"}
-                                time={
-                                  p?.which === "before"
-                                    ? `${fmtDuration(p.t)} / ${fmtDuration(p.dur)}`
-                                    : null
-                                }
+                              <SizePlay
+                                text={fmtBytes(c.bytes)}
+                                label="current"
+                                active={p?.which === "current"}
+                                time={timeOf("current")}
                                 disabled={ph === "restoring"}
-                                onClick={() => player.toggle(b, c.file, "before", k, c.durationSec)}
+                                onClick={() => play("current")}
                               />
-                              <PlayButton
-                                label={encoding ? "Encoding…" : done ? "After" : "Preview"}
-                                active={!!p && p.which !== "before"}
-                                busy={encoding}
-                                time={
-                                  p && p.which !== "before"
-                                    ? `${fmtDuration(p.t)} / ${fmtDuration(p.dur)}`
-                                    : null
-                                }
-                                disabled={!canSecond && !encoding}
-                                onClick={playSecond}
-                              />
+                              {c.original && (
+                                <SizePlay
+                                  small
+                                  text={`was ${fmtBytes(c.original.bytes)}`}
+                                  label="original"
+                                  active={p?.which === "original"}
+                                  time={timeOf("original")}
+                                  disabled={ph === "restoring"}
+                                  onClick={() => play("original")}
+                                />
+                              )}
                             </div>
+                            <div data-cell="after" style={{ textAlign: "right" }}>
+                              {s?.status === "failed" ? (
+                                <span style={{ color: "var(--sil-red)" }}>Failed</span>
+                              ) : third ? (
+                                <SizePlay
+                                  text={afterText}
+                                  label={third.which === "after" ? "after" : "preview"}
+                                  active={p?.which === third.which}
+                                  busy={encoding}
+                                  time={timeOf(third.which)}
+                                  disabled={!canThird && !encoding}
+                                  onClick={playThird}
+                                />
+                              ) : (
+                                // Compressing would change nothing: After is the current file.
+                                <span style={{ paddingRight: 22 }}>{afterText}</span>
+                              )}
+                            </div>
+                            <div />
+                            <div />
                           </div>
                         );
                       })}
@@ -739,9 +760,7 @@ export function App() {
               <span style={{ fontSize: 20, fontWeight: 600 }}>
                 {fmtBytes(tb)}{" "}
                 <span style={{ color: "var(--app-text-subtle)", fontWeight: 400 }}>→</span>{" "}
-                <span style={{ color: "var(--sil-blue)" }}>
-                  {(estimated ? "~" : "") + fmtBytes(ta)}
-                </span>
+                <span style={{ color: "var(--sil-blue)" }}>{fmtBytes(ta)}</span>
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column" }}>
@@ -831,14 +850,18 @@ function RestoreLink({ onClick }: { onClick: () => void }) {
   );
 }
 
+/** A right-aligned size. `originally` adds the kept original's size beneath, in grey, for a
+ *  clip or book this app has compressed. */
 function Num({
   children,
   color,
   cell,
+  originally,
 }: {
   children: React.ReactNode;
   color?: string;
   cell?: string;
+  originally?: number;
 }) {
   return (
     <div
@@ -849,9 +872,15 @@ function Num({
         whiteSpace: "nowrap",
         overflow: "hidden",
         color,
+        lineHeight: originally !== undefined ? 1.2 : undefined,
       }}
     >
       {children}
+      {originally !== undefined && (
+        <div data-originally style={{ fontSize: 11, color: "var(--app-text-subtle)" }}>
+          was {fmtBytes(originally)}
+        </div>
+      )}
     </div>
   );
 }
@@ -874,53 +903,70 @@ function Centered({ children }: { children: React.ReactNode }) {
   );
 }
 
-function PlayButton({
+/**
+ * A size with its play button: "13 KB ▶". While playing, the size gives way to the time
+ * ("0:03 / 0:07") and the button stops. `label` names what it plays, for screen readers
+ * and tests ("Play current", "Play preview").
+ */
+function SizePlay({
+  text,
   label,
   active,
   busy = false,
   time,
   disabled,
+  small = false,
   onClick,
 }: {
+  text: string;
   label: string;
   active: boolean;
   busy?: boolean;
   time: string | null;
   disabled: boolean;
+  small?: boolean;
   onClick: () => void;
 }) {
   const lit = active || busy;
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={busy ? label : `${active ? "Stop" : "Play"} ${label.toLowerCase()}`}
+    <div
       style={{
         display: "flex",
         alignItems: "center",
-        justifyContent: "center",
-        gap: 5,
-        height: 24,
-        padding: "0 8px",
-        border: `1px solid ${lit ? "var(--sil-blue)" : "var(--app-border-strong)"}`,
-        borderRadius: "var(--app-radius-sm)",
-        background: active
-          ? "var(--sil-blue-10)"
-          : busy
-            ? "var(--sil-blue-05)"
-            : "var(--app-surface)",
-        color: lit ? "var(--sil-blue)" : "var(--app-text)",
-        fontFamily: "var(--app-font)",
-        fontSize: 12,
-        cursor: "pointer",
-        opacity: disabled ? 0.4 : 1,
+        justifyContent: "flex-end",
+        gap: 4,
+        whiteSpace: "nowrap",
         fontVariantNumeric: "tabular-nums",
+        fontSize: small ? 11 : undefined,
+        color: lit ? "var(--sil-blue)" : small ? "var(--app-text-subtle)" : undefined,
       }}
     >
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-        <path d={active ? STOP : PLAY} />
-      </svg>
-      {time ?? label}
-    </button>
+      <span>{busy ? "Encoding…" : (time ?? text)}</span>
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={busy ? `Encoding ${label}` : `${active ? "Stop" : "Play"} ${label}`}
+        title={busy ? "Encoding…" : `${active ? "Stop" : "Play"} ${label}`}
+        style={{
+          width: small ? 16 : 18,
+          height: small ? 16 : 18,
+          flex: "none",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 0,
+          border: `1px solid ${lit ? "var(--sil-blue)" : "var(--app-border-strong)"}`,
+          borderRadius: "50%",
+          background: active ? "var(--sil-blue-10)" : "var(--app-surface)",
+          color: lit ? "var(--sil-blue)" : "var(--app-text-muted)",
+          cursor: "pointer",
+          opacity: disabled ? 0.4 : 1,
+        }}
+      >
+        <svg width={small ? 7 : 8} height={small ? 7 : 8} viewBox="0 0 24 24" fill="currentColor">
+          <path d={active ? STOP : PLAY} />
+        </svg>
+      </button>
+    </div>
   );
 }

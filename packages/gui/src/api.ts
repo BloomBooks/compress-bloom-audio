@@ -49,7 +49,8 @@ export interface EngineState {
     savedBytes: number;
     stopped: boolean;
     bookIds: string[];
-    beforeBytes: Record<string, number>;
+    jobBookIds: string[];
+    finishedAt: string;
   } | null;
   lastRestore: {
     restoredBooks: number;
@@ -165,8 +166,12 @@ export const api = {
   stop: () => post("/api/stop"),
   preview: (book: string, file: string, kbps: number) => post("/api/preview", { book, file, kbps }),
   restore: () => post("/api/restore"),
-  audioUrl: (book: string, file: string, which: "before" | "after" | "preview", kbps: number) =>
-    `/api/audio?${new URLSearchParams({ book, file, which, kbps: String(kbps) })}`,
+  audioUrl: (
+    book: string,
+    file: string,
+    which: "original" | "current" | "after" | "preview",
+    kbps: number,
+  ) => `/api/audio?${new URLSearchParams({ book, file, which, kbps: String(kbps) })}`,
 };
 /** Subscribe to the server's state snapshots. Returns an unsubscribe function. */
 export function subscribeState(onState: (s: EngineState) => void): () => void {

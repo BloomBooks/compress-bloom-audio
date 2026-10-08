@@ -205,7 +205,7 @@ export async function handleApiRequest(
 
     if (p === "/api/audio" && method === "GET") {
       const w = u.searchParams.get("which");
-      const which = w === "after" || w === "preview" ? w : "before";
+      const which = w === "original" || w === "after" || w === "preview" ? w : "current";
       // clipFile only answers for a book and file the scan found, so these query
       // values can't name an arbitrary path.
       const file = clipFile(
