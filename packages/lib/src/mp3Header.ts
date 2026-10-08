@@ -47,6 +47,24 @@ function frameHeader(b: Buffer, at: number): FrameHeader | null {
   };
 }
 
+/** The first offset before `limit` where a frame starts and another follows it, or -1. */
+function firstFrame(b: Buffer, limit: number): number {
+  for (let at = 0; at < limit; at++) {
+    const h = frameHeader(b, at);
+    if (h && frameHeader(b, at + h.frameBytes)) return at;
+  }
+  return -1;
+}
+
+/** Every whole frame in `b` from `at` on is at `kbps`. */
+function framesMatch(b: Buffer, at: number, kbps: number): boolean {
+  for (let h = frameHeader(b, at); h && at + h.frameBytes <= b.length; h = frameHeader(b, at)) {
+    if (h.kbps !== kbps) return false;
+    at += h.frameBytes;
+  }
+  return true;
+}
+
 /** Where the audio starts: after an ID3v2 tag, if the file has one. */
 function id3v2Length(b: Buffer): number {
   if (b.length < 10 || b.toString("latin1", 0, 3) !== "ID3") return 0;
@@ -120,10 +138,17 @@ export async function readMp3Info(file: string): Promise<AudioInfo | null> {
       if (tag === "Info") info.kbps = frameHeader(b, next)?.kbps ?? h.kbps;
       else if (streamBytes)
         info.kbps = Math.floor((streamBytes * 8 * h.sampleRate) / samples / 1000);
+      // A variable bitrate with no byte count: the first frame's says nothing about the rest.
+      else return null;
       return { ...info, durationSec: (samples - gapSamples) / h.sampleRate };
     }
     if (tag === "Xing" || tag === "Info") return null;
-    // No frame count: assume a constant bitrate, as ffmpeg does.
+    // No frame count, so the bitrate has to be constant for the first frame's to stand for
+    // the file: every frame at the start, and a run in the middle, must match it.
+    if (!framesMatch(b, at, h.kbps)) return null;
+    const middle = await readAt(fh, Math.floor(size / 2), 16384);
+    const m = firstFrame(middle, 4096);
+    if (m < 0 || !framesMatch(middle, m, h.kbps)) return null;
     const audioBytes = size - start - at - id3v1;
     return { ...info, durationSec: (audioBytes * 8) / (h.kbps * 1000) };
   } finally {

@@ -70,6 +70,13 @@ describe.skipIf(!ffmpeg)("readMp3Info", () => {
     });
   }
 
+  it("leaves a variable bitrate with no frame count to ffmpeg", async () => {
+    const out = path.join(dir, "vbr-no-xing.mp3");
+    const enc = ["-y", "-hide_banner", "-nostdin", "-i", path.join(dir, "in.wav")];
+    await runFfmpeg(ffmpeg!, [...enc, "-c:a", "libmp3lame", "-q:a", "6", "-write_xing", "0", out]);
+    expect(await readMp3Info(out)).toBeNull();
+  });
+
   it("gives up on a file that isn't an mp3", async () => {
     const f = path.join(dir, "not.mp3");
     await fs.writeFile(f, wav(0.2));
