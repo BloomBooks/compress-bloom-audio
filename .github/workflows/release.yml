@@ -9,7 +9,7 @@ name: Build & Release Windows Installer
 # collide with an existing release, and you never have to remember to bump by hand.
 #
 # Set dry_run=true to build + upload a test installer artifact without bumping or
-# publishing anything.
+# publishing anything (kept for one day).
 on:
   workflow_dispatch:
     inputs:
