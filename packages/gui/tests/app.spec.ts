@@ -116,7 +116,8 @@ test("preview encodes one clip and leaves the book alone", async ({ page }) => {
     .poll(async () => (await (await page.request.get("/api/startup")).json()).state.previews[key])
     .toBeGreaterThan(0);
   const bytes = (await (await page.request.get("/api/startup")).json()).state.previews[key];
-  await expect(c.locator("[data-cell=after]")).toHaveText(
+  await expect(c.locator("[data-cell=original]")).toHaveText(""); // never compressed
+  await expect(c.locator("[data-cell=preview]")).toHaveText(
     bytes >= 1024 * 1024
       ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
       : `${Math.round(bytes / 1024)} KB`,
@@ -137,7 +138,8 @@ test("compress replaces the audio, keeps originals outside the books, and restor
   // the original's size shown under it.
   await expect(ticked(page, MOON)).not.toBeChecked();
   await expect(ticked(page, GOATS)).not.toBeChecked();
-  await expect(row(page, MOON).locator("[data-cell=current]").first()).toContainText("was ");
+  await expect(row(page, MOON).locator("[data-cell=original]").first()).toContainText("KB");
+  await expect(row(page, MOON).locator("[data-cell=preview]").first()).toHaveText("");
   await expect(page.getByRole("button", { name: "Compress 0 books" })).toBeDisabled();
 
   // Every clip got smaller, and nothing was added to the book folders.
@@ -155,7 +157,9 @@ test("compress replaces the audio, keeps originals outside the books, and restor
   // nothing, so there is no Preview.
   await expand(page, MOON);
   const a1 = clip(page, MOON, "a1.mp3");
-  await expect(a1.locator("[data-cell=current]")).toContainText("was ");
+  await expect(a1.locator("[data-cell=original]")).toContainText("KB");
+  await expect(a1.locator("[data-cell=current]")).toContainText("KB");
+  await expect(a1.locator("[data-cell=preview]")).toHaveText("");
   await expectSizesFit(page);
   await expect(a1.getByRole("button", { name: /preview/i })).toHaveCount(0);
   expect(await playedBytes(page, a1, "Play current", "current")).toBe(after["a1.mp3"]);

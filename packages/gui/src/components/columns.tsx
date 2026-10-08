@@ -7,8 +7,9 @@ import React from "react";
 export const COLUMNS = [
   { name: "Book", width: 300, min: 120 },
   { name: "Clips", width: 52, min: 40 },
-  { name: "Current", width: 110, min: 80 },
-  { name: "After", width: 100, min: 80 },
+  { name: "Original", width: 96, min: 72 },
+  { name: "Current", width: 96, min: 72 },
+  { name: "Preview", width: 96, min: 72 },
   { name: "Saved", width: 60, min: 44 },
   { name: "Status", width: 150, min: 80 },
 ] as const;
@@ -25,7 +26,7 @@ function resizeCursorSvg(size: number) {
 }
 const RESIZE_CURSOR = `image-set(${resizeCursorSvg(24)} 1x, ${resizeCursorSvg(48)} 2x) 12 12, col-resize`;
 // Bump the version when the columns change, so remembered widths from before are ignored.
-const STORAGE_KEY = "compress-bloom-audio.columnWidths.v2";
+const STORAGE_KEY = "compress-bloom-audio.columnWidths.v3";
 
 function load(): number[] {
   const defaults = COLUMNS.map((c) => c.width);

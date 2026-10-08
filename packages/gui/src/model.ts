@@ -9,9 +9,9 @@ export const PRESETS: {
   hint: string;
   kbps: number;
 }[] = [
-  { id: "speech", label: "Speech", hint: "24 kbps · mono · smallest", kbps: 24 },
-  { id: "balanced", label: "Balanced", hint: "48 kbps · mono · recommended", kbps: 48 },
-  { id: "high", label: "High quality", hint: "96 kbps · music and singing", kbps: 96 },
+  { id: "speech", label: "Speech", hint: "24 kbps · mono", kbps: 24 },
+  { id: "balanced", label: "Balanced", hint: "48 kbps · mono", kbps: 48 },
+  { id: "high", label: "High quality", hint: "96 kbps", kbps: 96 },
 ];
 
 export function fmtBytes(bytes: number): string {

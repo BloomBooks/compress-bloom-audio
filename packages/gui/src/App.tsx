@@ -462,7 +462,7 @@ export function App() {
                   widths={cols.widths}
                   setWidth={cols.setWidth}
                   reset={cols.reset}
-                  align={i >= 1 && i <= 4 ? "right" : "left"}
+                  align={i >= 1 && i <= 5 ? "right" : "left"}
                 >
                   {c.name}
                 </HeaderCell>
@@ -545,11 +545,17 @@ export function App() {
                     <div style={{ textAlign: "right", color: "var(--app-text-muted)" }}>
                       {b.clips.length}
                     </div>
-                    <Num cell="current" originally={r.compressed ? r.original : undefined}>
-                      {fmtBytes(r.current)}
+                    {/* Original: only for a book this app has compressed. Preview: only when
+                        compressing it at the chosen setting would change it. */}
+                    <Num cell="original" color="var(--app-text-muted)">
+                      {r.compressed ? fmtBytes(r.original) : ""}
                     </Num>
-                    <Num color={r.actual && inJob ? "var(--app-text)" : "var(--app-text-muted)"}>
-                      {showAfter ? fmtBytes(r.after) : "—"}
+                    <Num cell="current">{fmtBytes(r.current)}</Num>
+                    <Num
+                      cell="preview"
+                      color={r.actual && inJob ? "var(--app-text)" : "var(--app-text-muted)"}
+                    >
+                      {showAfter && r.after !== r.current ? fmtBytes(r.after) : ""}
                     </Num>
                     <Num color="var(--sil-green-dark)">
                       {showAfter && r.after < r.current
@@ -652,22 +658,10 @@ export function App() {
                               {c.label}
                             </div>
                             <div style={{ textAlign: "right" }}>{fmtDuration(c.durationSec)}</div>
-                            <div
-                              data-cell="current"
-                              style={{ textAlign: "right", lineHeight: 1.2 }}
-                            >
-                              <SizePlay
-                                text={fmtBytes(c.bytes)}
-                                label="current"
-                                active={p?.which === "current"}
-                                time={timeOf("current")}
-                                disabled={ph === "restoring"}
-                                onClick={() => play("current")}
-                              />
+                            <div data-cell="original" style={{ textAlign: "right" }}>
                               {c.original && (
                                 <SizePlay
-                                  small
-                                  text={`was ${fmtBytes(c.original.bytes)}`}
+                                  text={fmtBytes(c.original.bytes)}
                                   label="original"
                                   active={p?.which === "original"}
                                   time={timeOf("original")}
@@ -676,24 +670,33 @@ export function App() {
                                 />
                               )}
                             </div>
-                            <div data-cell="after" style={{ textAlign: "right" }}>
+                            <div data-cell="current" style={{ textAlign: "right" }}>
+                              <SizePlay
+                                text={fmtBytes(c.bytes)}
+                                label="current"
+                                active={p?.which === "current"}
+                                time={timeOf("current")}
+                                disabled={ph === "restoring"}
+                                onClick={() => play("current")}
+                              />
+                            </div>
+                            <div data-cell="preview" style={{ textAlign: "right" }}>
                               {s?.status === "failed" ? (
                                 <span style={{ color: "var(--sil-red)" }}>Failed</span>
-                              ) : third ? (
-                                <SizePlay
-                                  text={afterText}
-                                  label={third.which === "after" ? "after" : "preview"}
-                                  active={p?.which === third.which}
-                                  busy={encoding}
-                                  time={timeOf(third.which)}
-                                  disabled={!canThird && !encoding}
-                                  onClick={playThird}
-                                />
                               ) : (
-                                // Compressing would change nothing: After is the current file.
-                                <span style={{ paddingRight: 22 }}>{afterText}</span>
+                                third && (
+                                  <SizePlay
+                                    text={afterText}
+                                    label={third.which === "after" ? "after" : "preview"}
+                                    active={p?.which === third.which}
+                                    busy={encoding}
+                                    time={timeOf(third.which)}
+                                    disabled={!canThird && !encoding}
+                                    onClick={playThird}
+                                  />
+                                )
                               )}
-                            </div>
+                            </div>{" "}
                             <div />
                             <div />
                           </div>
@@ -850,18 +853,14 @@ function RestoreLink({ onClick }: { onClick: () => void }) {
   );
 }
 
-/** A right-aligned size. `originally` adds the kept original's size beneath, in grey, for a
- *  clip or book this app has compressed. */
 function Num({
   children,
   color,
   cell,
-  originally,
 }: {
   children: React.ReactNode;
   color?: string;
   cell?: string;
-  originally?: number;
 }) {
   return (
     <div
@@ -872,15 +871,9 @@ function Num({
         whiteSpace: "nowrap",
         overflow: "hidden",
         color,
-        lineHeight: originally !== undefined ? 1.2 : undefined,
       }}
     >
       {children}
-      {originally !== undefined && (
-        <div data-originally style={{ fontSize: 11, color: "var(--app-text-subtle)" }}>
-          was {fmtBytes(originally)}
-        </div>
-      )}
     </div>
   );
 }
