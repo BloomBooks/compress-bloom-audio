@@ -77,19 +77,41 @@ async function serveAudio(req: IncomingMessage, res: ServerResponse, file: strin
   res.setHeader("Content-Type", "audio/mpeg");
   res.setHeader("Accept-Ranges", "bytes");
   res.setHeader("Cache-Control", "no-store");
-  const range = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? "");
-  if (range) {
-    const start = range[1] ? Number(range[1]) : 0;
-    const end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+  // A read error (the file removed between stat and open, say) must end this response, not
+  // the whole server: an unhandled stream error would take the sidecar down with it.
+  const pipe = (stream: fs.ReadStream) => {
+    stream.on("error", () => {
+      if (!res.headersSent) res.statusCode = 500;
+      res.destroy();
+    });
+    res.on("close", () => stream.destroy());
+    stream.pipe(res);
+  };
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
+  if (range && (range[1] || range[2])) {
+    let start: number;
+    let end: number;
+    if (!range[1]) {
+      // "bytes=-N": the last N bytes.
+      start = Math.max(0, size - Number(range[2]));
+      end = size - 1;
+    } else {
+      start = Number(range[1]);
+      end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    }
+    if (start >= size || start > end) {
+      res.statusCode = 416;
+      res.setHeader("Content-Range", `bytes */${size}`);
+      return void res.end();
+    }
     res.statusCode = 206;
     res.setHeader("Content-Range", `bytes ${start}-${end}/${size}`);
     res.setHeader("Content-Length", String(end - start + 1));
-    fs.createReadStream(file, { start, end }).pipe(res);
-    return;
+    return pipe(fs.createReadStream(file, { start, end }));
   }
   res.statusCode = 200;
   res.setHeader("Content-Length", String(size));
-  fs.createReadStream(file).pipe(res);
+  pipe(fs.createReadStream(file));
 }
 
 const PRESETS = new Set<Settings["preset"]>(["speech", "balanced", "high", "custom"]);

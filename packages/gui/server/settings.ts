@@ -28,11 +28,22 @@ export async function getSettings(): Promise<Settings> {
   }
 }
 
-export async function saveSettings(patch: Partial<Settings>): Promise<Settings> {
-  const next = { ...(await getSettings()), ...patch };
-  await fs.mkdir(path.dirname(FILE), { recursive: true });
-  const temp = FILE + ".tmp";
-  await fs.writeFile(temp, JSON.stringify(next, null, 2));
-  await fs.rename(temp, FILE);
-  return next;
+/** Saves run one at a time, in the order they arrive. Each reads the file, merges its
+ *  patch and writes it back, so two overlapping saves would otherwise both read the old
+ *  file, and the slower one would put back a choice the user had already changed. */
+let queue: Promise<unknown> = Promise.resolve();
+let writes = 0;
+
+export function saveSettings(patch: Partial<Settings>): Promise<Settings> {
+  const run = async () => {
+    const next = { ...(await getSettings()), ...patch };
+    await fs.mkdir(path.dirname(FILE), { recursive: true });
+    const temp = `${FILE}.${process.pid}.${++writes}.tmp`;
+    await fs.writeFile(temp, JSON.stringify(next, null, 2));
+    await fs.rename(temp, FILE);
+    return next;
+  };
+  const result = queue.then(run, run);
+  queue = result.catch(() => {});
+  return result;
 }

@@ -166,6 +166,8 @@ export const api = {
   stop: () => post("/api/stop"),
   preview: (book: string, file: string, kbps: number) => post("/api/preview", { book, file, kbps }),
   restore: () => post("/api/restore"),
+  /** Dev server only: swap in the changed server code now, abandoning the running job. */
+  devReload: () => post("/api/dev-reload"),
   audioUrl: (
     book: string,
     file: string,
@@ -174,12 +176,19 @@ export const api = {
   ) => `/api/audio?${new URLSearchParams({ book, file, which, kbps: String(kbps) })}`,
 };
 /** Subscribe to the server's state snapshots. Returns an unsubscribe function. */
-export function subscribeState(onState: (s: EngineState) => void): () => void {
+/** Subscribe to the server's state snapshots. `onReloadPending` hears from the dev server
+ *  when it is holding back a code reload until the running job finishes. */
+export function subscribeState(
+  onState: (s: EngineState) => void,
+  onReloadPending?: (pending: boolean) => void,
+): () => void {
   const es = new EventSource("/api/events");
   es.addEventListener("state", (e) => onState(JSON.parse((e as MessageEvent).data)));
   // The dev server asks for a reload when its server code was swapped (apiDevPlugin.ts).
   es.addEventListener("dev-reload", (e) => {
-    if (JSON.parse((e as MessageEvent).data).reload) window.location.reload();
+    const d = JSON.parse((e as MessageEvent).data);
+    if (d.reload) window.location.reload();
+    else onReloadPending?.(!!d.pending);
   });
   return () => es.close();
 }

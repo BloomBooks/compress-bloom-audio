@@ -293,6 +293,17 @@ async function restoreWindowState() {
     if (Number.isFinite(x) && Number.isFinite(y)) {
       await Neutralino.window.move(Math.round(x), Math.round(y));
     }
+    // Seed the remembered normal bounds from the file. While the window is maximized,
+    // captureWindowState can't read them (getSize reports the maximized size), so without
+    // this a session that starts and stays maximized would save no normal size at all.
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      lastBounds = {
+        width: Math.max(MIN_WIN_WIDTH, Math.round(w)),
+        height: Math.max(MIN_WIN_HEIGHT, Math.round(h)),
+        x: Number.isFinite(x) ? Math.round(x) : 0,
+        y: Number.isFinite(y) ? Math.round(y) : 0,
+      };
+    }
     if (s.maximize) {
       await Neutralino.window.maximize();
       lastMaximized = true;

@@ -72,7 +72,46 @@ export interface EngineState {
   error: string | null;
 }
 
-const WORK_ROOT = path.join(os.tmpdir(), "compress-bloom-audio");
+/**
+ * Working copies and preview encodes live under a folder per server process, named by its
+ * pid, so a server that was killed (the desktop app ends its sidecar abruptly) leaves
+ * nothing behind for long: each server, on starting, removes the folders of servers that
+ * are no longer running. Per process, not shared, because a dev server and the e2e
+ * tests' server can run at the same time.
+ */
+const WORK_PARENT = path.join(os.tmpdir(), "BloomAudioCompressor-work");
+const WORK_DIR = path.join(WORK_PARENT, String(process.pid));
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM"; // exists, not ours to signal
+  }
+}
+
+async function removeLeftovers() {
+  let names: string[];
+  try {
+    names = await fs.readdir(WORK_PARENT);
+  } catch {
+    return;
+  }
+  for (const n of names) {
+    const pid = Number(n);
+    if (Number.isInteger(pid) && pid !== process.pid && !isRunning(pid)) {
+      await rmDir(path.join(WORK_PARENT, n));
+    }
+  }
+}
+void removeLeftovers();
+
+/** A new, empty folder under this server's work folder. */
+async function newWorkFolder(prefix: string): Promise<string> {
+  await fs.mkdir(WORK_DIR, { recursive: true });
+  return fs.mkdtemp(path.join(WORK_DIR, prefix));
+}
 const BACKUP_ROOT = process.env.COMPRESS_BLOOM_AUDIO_BACKUPS || defaultBackupRoot();
 const PARALLEL = Math.max(1, Math.min(4, os.cpus().length - 1));
 
@@ -144,6 +183,9 @@ const key = (bookId: string, file: string) => `${bookId}/${file}`;
 
 function requireIdle() {
   if (state.phase !== "idle") throw new Error(`can't do that while ${state.phase}`);
+  // A preview encode reads the open collection's originals and writes into its preview
+  // folder, so nothing may switch the collection or rewrite its files under it.
+  if (state.encoding) throw new Error("can't do that while a preview is encoding");
 }
 
 async function rmDir(dir: string | null) {
@@ -156,9 +198,8 @@ export async function ensureFfmpeg(): Promise<string | null> {
 }
 
 /** Scan the collection and attach each clip's kept original, if it still applies. */
-async function scan(ffmpeg: string, folder: string): Promise<GuiCollection> {
+async function scan(ffmpeg: string, folder: string, s: BackupStore): Promise<GuiCollection> {
   const c = await scanCollection(ffmpeg, folder);
-  const s = store!;
   const books: GuiBook[] = [];
   for (const b of c.books) {
     const clips: GuiClip[] = [];
@@ -186,7 +227,7 @@ async function rescan(patch: Partial<EngineState> = {}) {
   const collection = state.collection;
   if (!collection || !state.ffmpeg) return;
   set({ phase: "scanning" });
-  const fresh = await scan(state.ffmpeg, collection.folder);
+  const fresh = await scan(state.ffmpeg, collection.folder, store!);
   set({
     ...patch,
     collection: fresh,
@@ -205,24 +246,26 @@ export async function openCollection(folder: string): Promise<void> {
   }
   const ffmpeg = await ensureFfmpeg();
   if (!ffmpeg) throw new Error("Couldn't find Bloom's ffmpeg. Install Bloom, then try again.");
-  await rmDir(previewDir);
-  previewDir = null;
-  store = new BackupStore(BACKUP_ROOT, folder);
-  set({
-    phase: "scanning",
-    clips: {},
-    job: null,
-    stopped: false,
-    previews: {},
-    lastCompress: null,
-    lastRestore: null,
-    error: null,
-  });
+  // The new collection's backup store and previews take over only once it has scanned:
+  // if the scan fails, the previous collection stays open, and compressing its books must
+  // still keep their originals in its own store.
+  const candidate = new BackupStore(BACKUP_ROOT, folder);
+  set({ phase: "scanning", error: null });
   try {
-    const collection = await scan(ffmpeg, folder);
+    const collection = await scan(ffmpeg, folder, candidate);
+    const restorableBookIds = await candidate.restorableBookIds(collection.books);
+    store = candidate;
+    await rmDir(previewDir);
+    previewDir = null;
     set({
       collection,
-      restorableBookIds: await store.restorableBookIds(collection.books),
+      restorableBookIds,
+      clips: {},
+      job: null,
+      stopped: false,
+      previews: {},
+      lastCompress: null,
+      lastRestore: null,
       phase: "idle",
     });
   } catch (e) {
@@ -284,7 +327,7 @@ export async function startCompress(bookIds: string[], kbps: number): Promise<vo
   if (!collection || !state.ffmpeg) throw new Error("no collection open");
   const books = collection.books.filter((b) => bookIds.includes(b.id));
   await rmDir(workDir);
-  workDir = await fs.mkdtemp(path.join(WORK_ROOT + "-"));
+  workDir = await newWorkFolder("job-");
   abort = new AbortController();
   const signal = abort.signal;
 
@@ -389,10 +432,10 @@ export async function preview(bookId: string, file: string, kbps: number): Promi
   if (!book || !clip) throw new Error("no such clip");
   const pk = `${key(bookId, file)}@${kbps}`;
   if (pk in state.previews || plan(clip, kbps).kind === "skip") return;
-  if (state.encoding) throw new Error("already encoding a preview");
-  previewDir ??= await fs.mkdtemp(path.join(WORK_ROOT + "-preview-"));
+  // Claim the encoder before any await, so two requests can't both start one.
   set({ encoding: key(bookId, file) });
   try {
+    previewDir ??= await newWorkFolder("preview-");
     const size = await produce(book, clip, kbps, path.join(previewDir, String(kbps), bookId, file));
     if (size !== null) state.previews = { ...state.previews, [pk]: size };
   } finally {

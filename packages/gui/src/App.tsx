@@ -69,6 +69,7 @@ export function App() {
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
   const [advanced, setAdvanced] = React.useState(false);
   const [askRestore, setAskRestore] = React.useState(false);
+  const [reloadPending, setReloadPending] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const player = useAudioPlayer();
   const cols = useColumnWidths();
@@ -88,7 +89,7 @@ export function App() {
         setState(r.state);
       })
       .catch((e) => setActionError(String(e.message || e)));
-    return subscribeState(setState);
+    return subscribeState(setState, setReloadPending);
   }, []);
 
   // A newly opened collection starts with every book ticked.
@@ -155,7 +156,7 @@ export function App() {
   const pct = tb ? Math.round((prog / tb) * 100) : 0;
   const nSel = selected.size;
   const nRestorable = state.restorableBookIds.length;
-  const canRestore = nRestorable > 0 && ph === "idle";
+  const canRestore = nRestorable > 0 && ph === "idle" && !state.encoding;
   const allSelected = books.length > 0 && books.every((b) => selected.has(b.id));
   const toggleIn = (setter: typeof setSelected, id: string) =>
     setter((prev) => {
@@ -214,10 +215,38 @@ export function App() {
             {state.collection?.folder ?? "Choose the folder of a Bloom collection to see its books"}
           </span>
         </div>
-        <Button variant="secondary" onClick={chooseCollection} disabled={locked}>
+        <Button
+          variant="secondary"
+          onClick={chooseCollection}
+          disabled={locked || !!state.encoding}
+        >
           {state.collection ? "Change collection…" : "Choose collection…"}
         </Button>
       </div>
+
+      {reloadPending && (
+        <div
+          role="status"
+          style={{
+            flex: "none",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "8px 20px",
+            background: "var(--sil-yellow-10)",
+            fontSize: 13,
+            borderBottom: "1px solid var(--app-border)",
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            Dev server: the server code changed during a compression. It will reload when the
+            compression finishes.
+          </span>
+          <Button variant="secondary" onClick={() => run(api.devReload())}>
+            Restart now
+          </Button>
+        </div>
+      )}
 
       {(actionError || state.error || !state.ffmpeg) && (
         <div

@@ -265,3 +265,17 @@ test("columns can be dragged wider, and keep their width after a reload", async 
     -1,
   );
 });
+
+test("an audio request for bytes past the end of the file gets a 416, and the server stays up", async ({
+  page,
+}) => {
+  const size = (await sizes(book(MOON)))["a1.mp3"];
+  const url = `/api/audio?book=${encodeURIComponent(MOON)}&file=a1.mp3&which=current&kbps=48`;
+  const past = await page.request.get(url, { headers: { Range: `bytes=${size}-` } });
+  expect(past.status()).toBe(416);
+  expect(past.headers()["content-range"]).toBe(`bytes */${size}`);
+  const tail = await page.request.get(url, { headers: { Range: "bytes=-10" } });
+  expect(tail.status()).toBe(206);
+  expect((await tail.body()).length).toBe(10);
+  expect((await page.request.get("/api/health")).ok()).toBe(true);
+});

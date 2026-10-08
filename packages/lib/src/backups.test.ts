@@ -100,4 +100,30 @@ describe("BackupStore", () => {
       await new BackupStore(backups, path.join(root, "Other")).restorableBookIds([book()]),
     ).toEqual([]);
   });
+
+  it("keeps the original when a re-compression stops between saving its record and replacing the file", async () => {
+    const store = new BackupStore(backups, collection);
+    await replace(store, "a.mp3", "48k a", 48);
+    // What a 24 kbps run leaves behind if the app stops after saving the manifest but
+    // before the book's file is replaced: the record names the 24k copy, the book still
+    // holds the 48k one.
+    const manifestPath = path.join(store.dir, "manifest.json");
+    const m = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+    const c = m.books["Book A"].clips["a.mp3"];
+    Object.assign(c, {
+      previousSha256: c.currentSha256,
+      previousKbps: 48,
+      currentSha256: "hash of a 24k copy that never reached the book",
+      currentKbps: 24,
+    });
+    await fs.writeFile(manifestPath, JSON.stringify(m));
+
+    const reopened = new BackupStore(backups, collection);
+    expect(await reopened.validOriginal("Book A", book().folder, "a.mp3")).toMatchObject({
+      currentKbps: 48,
+    });
+    await replace(reopened, "a.mp3", "24k a", 24); // the retry
+    await reopened.restoreAll();
+    expect(await read("a.mp3")).toBe("original a");
+  });
 });

@@ -25,6 +25,14 @@ export interface StoredClip {
   /** The compressed copy we put in the book. */
   currentSha256: string;
   currentKbps: number;
+  /**
+   * Set only while a re-compression is replacing the book's file: the copy that was there
+   * before. The manifest is saved before the file is replaced, so if the app stops in
+   * between, the book still holds this copy. Recognising it keeps that copy from being
+   * mistaken for a new recording, which would overwrite the kept original.
+   */
+  previousSha256?: string;
+  previousKbps?: number;
 }
 
 export interface StoredBook {
@@ -134,8 +142,18 @@ export class BackupStore {
     const entry = (await this.load()).books[bookId]?.clips[file];
     if (!entry) return null;
     const current = await sha256File(path.join(bookFolder, "audio", file)).catch(() => null);
-    if (current !== entry.currentSha256) return null;
-    return { ...entry, path: this.originalPath(bookId, file) };
+    const { previousSha256, previousKbps, ...rest } = entry;
+    if (current === entry.currentSha256) return { ...rest, path: this.originalPath(bookId, file) };
+    // An interrupted re-compression: the book still holds the copy from before it.
+    if (previousSha256 && current === previousSha256) {
+      return {
+        ...rest,
+        currentSha256: previousSha256,
+        currentKbps: previousKbps ?? rest.currentKbps,
+        path: this.originalPath(bookId, file),
+      };
+    }
+    return null;
   }
 
   /** Every book with at least one clip that Restore would put back. */
@@ -174,7 +192,15 @@ export class BackupStore {
     ]);
     let entry: StoredClip;
     if (keep) {
-      entry = { ...keep, currentSha256: newSha, currentKbps: compressedKbps };
+      const { path: _path, ...kept } = keep;
+      void _path;
+      entry = {
+        ...kept,
+        previousSha256: currentSha,
+        previousKbps: keep.currentKbps,
+        currentSha256: newSha,
+        currentKbps: compressedKbps,
+      };
     } else {
       const backup = this.originalPath(book.id, file);
       await fs.mkdir(path.dirname(backup), { recursive: true });
@@ -201,6 +227,10 @@ export class BackupStore {
     m.books[book.id].clips[file] = entry;
     await this.save();
     await replaceFile(compressedPath, target);
+    // The book now holds the new copy; the old one need no longer be recognised.
+    delete entry.previousSha256;
+    delete entry.previousKbps;
+    await this.save();
   }
 
   /**
@@ -216,7 +246,10 @@ export class BackupStore {
       for (const [file, entry] of Object.entries(b.clips)) {
         const target = path.join(b.folder, "audio", file);
         const current = await sha256File(target).catch(() => null);
-        if (current === entry.currentSha256) {
+        if (
+          current === entry.currentSha256 ||
+          (entry.previousSha256 && current === entry.previousSha256)
+        ) {
           await replaceFile(this.originalPath(bookId, file), target);
           result.restoredClips++;
           any = true;
