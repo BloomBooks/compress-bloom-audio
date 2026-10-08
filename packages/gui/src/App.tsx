@@ -101,6 +101,13 @@ export function App() {
     setExpanded(new Set());
   }, [state?.collection]);
 
+  // A book that couldn't be read can't be compressed, so it drops out of the selection.
+  React.useEffect(() => {
+    const failed = state?.collection?.books.filter((b) => b.error).map((b) => b.id) ?? [];
+    if (failed.length)
+      setSelected((prev) => new Set([...prev].filter((id) => !failed.includes(id))));
+  }, [state?.collection]);
+
   // Whatever is playing belongs to files that a compress or restore is about to replace.
   React.useEffect(() => {
     if (!state) return;
@@ -156,12 +163,15 @@ export function App() {
   const ta = totalRows.reduce((a, r) => a + r.after, 0);
   const tc = totalRows.reduce((a, r) => a + r.book.clips.length, 0);
   const estimated = totalRows.some((r) => !r.actual);
+  // Until every chosen book is read, its bitrates are unknown, so there is no estimate yet.
+  const unread = totalRows.some((r) => !r.book.read);
   const prog = totalRows.reduce((a, r) => a + r.current * r.progress, 0);
   const pct = tb ? Math.round((prog / tb) * 100) : 0;
   const nSel = selected.size;
   const nRestorable = state.restorableBookIds.length;
   const canRestore = nRestorable > 0 && ph === "idle" && !state.encoding;
-  const allSelected = books.length > 0 && books.every((b) => selected.has(b.id));
+  const tickable = books.filter((b) => !b.error);
+  const allSelected = tickable.length > 0 && tickable.every((b) => selected.has(b.id));
   const toggleIn = (setter: typeof setSelected, id: string) =>
     setter((prev) => {
       const n = new Set(prev);
@@ -442,11 +452,6 @@ export function App() {
             {ph === "restoring" && (
               <span style={{ fontSize: 13, color: "var(--app-text-muted)" }}>Restoring…</span>
             )}
-            {ph === "scanning" && !loadingCollection && (
-              <span style={{ fontSize: 13, color: "var(--app-text-muted)" }}>
-                Reading the changed books again…
-              </span>
-            )}
             {state.lastRestore && ph === "idle" && !askRestore && (
               <span style={{ fontSize: 13, color: "var(--sil-green-dark)" }}>
                 Original audio restored in {plural(state.lastRestore.restoredBooks, "book")}
@@ -490,7 +495,7 @@ export function App() {
                 checked={allSelected}
                 disabled={locked || !books.length}
                 onChange={() =>
-                  setSelected(allSelected ? new Set() : new Set(books.map((b) => b.id)))
+                  setSelected(allSelected ? new Set() : new Set(tickable.map((b) => b.id)))
                 }
               />
               {COLUMNS.map((c, i) => (
@@ -506,10 +511,9 @@ export function App() {
                 </HeaderCell>
               ))}
             </div>
-            {loadingCollection && (
-              <Centered>
-                <ScanProgress progress={state.scanProgress} />
-              </Centered>
+            {loadingCollection && <Centered>Listing the books in this collection…</Centered>}
+            {ph === "scanning" && !loadingCollection && (
+              <ScanProgress progress={state.scanProgress} />
             )}
             {ph !== "scanning" && state.collection && !books.length && (
               <Centered>None of the books in this collection have recorded audio.</Centered>
@@ -545,12 +549,13 @@ export function App() {
                     <Checkbox
                       id={`b-${b.id}`}
                       checked={selected.has(b.id)}
-                      disabled={locked}
+                      disabled={locked || !b.read}
                       onChange={() => toggleIn(setSelected, b.id)}
                     />
                     <button
-                      title={b.folder}
+                      title={b.error ? `Couldn't read this book: ${b.error}` : b.folder}
                       aria-expanded={isOpen}
+                      disabled={!b.read}
                       onClick={() => toggleIn(setExpanded, b.id)}
                       style={{
                         border: "none",
@@ -560,7 +565,7 @@ export function App() {
                         alignItems: "center",
                         gap: 6,
                         minWidth: 0,
-                        cursor: "pointer",
+                        cursor: b.read ? "pointer" : "default",
                         fontFamily: "var(--app-font)",
                         fontSize: 14,
                         textAlign: "left",
@@ -633,7 +638,7 @@ export function App() {
                       <span style={{ whiteSpace: "nowrap" }}>{r.status}</span>
                     </div>
                   </div>
-                  {isOpen && (
+                  {isOpen && b.read && (
                     <div
                       style={{
                         background: "var(--app-surface-2)",
@@ -803,7 +808,7 @@ export function App() {
               <span style={{ fontSize: 20, fontWeight: 600 }}>
                 {fmtBytes(tb)}{" "}
                 <span style={{ color: "var(--app-text-subtle)", fontWeight: 400 }}>→</span>{" "}
-                <span style={{ color: "var(--sil-blue)" }}>{fmtBytes(ta)}</span>
+                <span style={{ color: "var(--sil-blue)" }}>{unread ? "…" : fmtBytes(ta)}</span>
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column" }}>
@@ -811,8 +816,8 @@ export function App() {
                 {estimated ? "Estimated saving" : "Saving"}
               </span>
               <span style={{ fontSize: 20, fontWeight: 600, color: "var(--sil-green-dark)" }}>
-                {fmtBytes(Math.max(0, tb - ta))}{" "}
-                {tb > 0 && (
+                {unread ? "…" : fmtBytes(Math.max(0, tb - ta))}{" "}
+                {tb > 0 && !unread && (
                   <span style={{ fontSize: 14, fontWeight: 400 }}>
                     ({Math.round((1 - ta / tb) * 100)}% smaller)
                   </span>
@@ -917,20 +922,32 @@ function Num({
     </div>
   );
 }
+/** Above the rows while books are being read: how many clips so far, out of how many. */
 function ScanProgress({ progress }: { progress: EngineState["scanProgress"] }) {
   const total = progress?.total ?? 0;
   const done = Math.min(progress?.done ?? 0, total);
   return (
-    <div style={{ width: 320, maxWidth: "100%" }} role="status">
-      <div>Reading the books in this collection…</div>
+    <div
+      role="status"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "8px 20px",
+        fontSize: 13,
+        color: "var(--app-text-muted)",
+        borderBottom: "1px solid var(--app-border)",
+      }}
+    >
+      <span style={{ whiteSpace: "nowrap" }}>Reading the books…</span>
       <div
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={total}
         aria-valuenow={done}
         style={{
+          flex: "0 1 240px",
           height: 6,
-          margin: "12px 0 8px",
           borderRadius: 3,
           background: "var(--app-border)",
           overflow: "hidden",
@@ -945,11 +962,11 @@ function ScanProgress({ progress }: { progress: EngineState["scanProgress"] }) {
           }}
         />
       </div>
-      <div style={{ fontSize: 12 }}>
+      <span style={{ whiteSpace: "nowrap" }}>
         {total
           ? `${done.toLocaleString()} of ${total.toLocaleString()} ${total === 1 ? "clip" : "clips"}`
-          : " "}
-      </div>
+          : ""}
+      </span>
     </div>
   );
 }

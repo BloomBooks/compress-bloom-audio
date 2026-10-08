@@ -14,6 +14,7 @@ export const E2E_ENV = {
   COMPRESS_BLOOM_AUDIO_DEV_PORT: String(E2E_PORT),
   COMPRESS_BLOOM_AUDIO_SETTINGS: path.join(E2E_ROOT, "settings.json"),
   COMPRESS_BLOOM_AUDIO_BACKUPS: path.join(E2E_ROOT, "backups"),
+  COMPRESS_BLOOM_AUDIO_TEST_READ_DELAY_MS: "800",
 };
 
 export interface FixtureBook {

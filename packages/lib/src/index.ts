@@ -9,6 +9,9 @@ export {
   type ClipLabel,
 } from "./bookAudio";
 export {
+  listCollection,
+  listBook,
+  readBook,
   scanCollection,
   scanBook,
   isBloomCollection,

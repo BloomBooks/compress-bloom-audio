@@ -32,7 +32,13 @@ test.beforeEach(async ({ page, request }, info) => {
   expect(r.ok(), await r.text()).toBe(true);
   await page.goto("/");
   await expect(page.locator(`[data-book="${MOON}"]`)).toBeVisible();
+  await expectAllRead(page);
 });
+
+/** Wait until every book has been read (the server holds each back a little; see E2E_ENV). */
+async function expectAllRead(page: Page) {
+  await expect(page.getByRole("progressbar")).toHaveCount(0, { timeout: 15_000 });
+}
 
 const row = (page: Page, title: string) => page.locator(`[data-book="${title}"]`);
 const clip = (page: Page, title: string, file: string) =>
@@ -103,6 +109,28 @@ test("lists the books and names each clip after its page", async ({ page }) => {
     await expect(clip(page, MOON, file)).toContainText(label);
   }
   await expectSizesFit(page);
+});
+
+test("lists the books at once, then fills each one in as it is read", async ({ page, request }) => {
+  const r = await request.post("/api/collection", {
+    data: { folder: path.dirname(book(MOON).folder) },
+  });
+  expect(r.ok(), await r.text()).toBe(true);
+  // Listed, not read: the book is there with its clip count, but can't be ticked or opened.
+  const moon = row(page, MOON);
+  await expect(moon).toContainText("Reading…");
+  await expect(page.getByRole("progressbar")).toBeVisible();
+  await expect(moon.getByRole("checkbox")).toBeDisabled();
+  await expect(moon).toContainText(String(Object.keys(book(MOON).clips).length));
+  // No saving is claimed for books whose bitrates aren't known yet.
+  await expect(page.getByText("Estimated saving").locator("..")).toContainText("…");
+  // Read: the progress line goes, and the clips have their page labels.
+  await expectAllRead(page);
+  await expect(moon).toContainText("Ready");
+  await expect(moon.getByRole("checkbox")).toBeEnabled();
+  await expand(page, MOON);
+  const [file, label] = Object.entries(book(MOON).clips)[0];
+  await expect(clip(page, MOON, file)).toContainText(label);
 });
 
 test("preview encodes one clip and leaves the book alone", async ({ page }) => {

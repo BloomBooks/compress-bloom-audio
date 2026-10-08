@@ -113,7 +113,10 @@ export function bookRow(book: Book, st: EngineState, selected: boolean, kbps: nu
   let status: string;
   let statusTone: BookRow["statusTone"] = "muted";
 
-  if (just) {
+  if (!book.read) {
+    status = book.error ? "Couldn't read" : "Reading…";
+    statusTone = book.error ? "red" : "subtle";
+  } else if (just) {
     status = "Compressed";
     statusTone = "green";
   } else if (st.phase !== "running") {

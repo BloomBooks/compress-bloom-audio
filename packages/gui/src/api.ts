@@ -21,6 +21,10 @@ export interface Book {
   folder: string;
   title: string;
   clips: Clip[];
+  /** False while only listed: clips have file names and sizes, nothing else yet. */
+  read: boolean;
+  /** Why the book couldn't be read. */
+  error?: string;
 }
 export interface Collection {
   folder: string;

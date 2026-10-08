@@ -13,8 +13,10 @@ import {
   defaultBackupRoot,
   findFfmpeg,
   isBloomCollection,
-  scanBook,
-  scanCollection,
+  listBook,
+  listCollection,
+  mapLimit,
+  readBook,
   type Book,
   type Clip,
   type Collection,
@@ -37,6 +39,8 @@ export interface GuiClip extends Clip {
 }
 export interface GuiBook extends Omit<Book, "clips"> {
   clips: GuiClip[];
+  /** Why the book couldn't be read. It stays listed, unread, and can't be compressed. */
+  error?: string;
 }
 export interface GuiCollection extends Omit<Collection, "books"> {
   books: GuiBook[];
@@ -70,7 +74,8 @@ export interface EngineState {
   } | null;
   /** The outcome of the last Restore, until the next action. */
   lastRestore: RestoreResult | null;
-  /** While a scan runs: how many clips have been read, out of how many. */
+  /** While books are being read: how many clips have been read, out of how many. `folder`
+   *  is the collection they belong to, which is not yet `collection` while it is listed. */
   scanProgress: { folder: string; done: number; total: number } | null;
   error: string | null;
 }
@@ -117,6 +122,9 @@ async function newWorkFolder(prefix: string): Promise<string> {
 }
 const BACKUP_ROOT = process.env.COMPRESS_BLOOM_AUDIO_BACKUPS || defaultBackupRoot();
 const PARALLEL = Math.max(1, Math.min(4, os.cpus().length - 1));
+/** The end-to-end tests set this to hold each book back before it is read, so they can see
+ *  a collection that is listed but not yet read; reading is otherwise too fast to catch. */
+const READ_DELAY_MS = Number(process.env.COMPRESS_BLOOM_AUDIO_TEST_READ_DELAY_MS) || 0;
 
 let state: EngineState = {
   phase: "idle",
@@ -227,49 +235,45 @@ function showScanProgress(folder: string, done: number, total: number) {
   push();
 }
 
-/** Scan the collection and attach each clip's kept original, if it still applies. */
-async function scan(ffmpeg: string, folder: string, s: BackupStore): Promise<GuiCollection> {
-  const c = await scanCollection(ffmpeg, folder, (done, total) =>
-    showScanProgress(folder, done, total),
-  );
-  const books: GuiBook[] = [];
-  for (const b of c.books) books.push(await withOriginals(b, s));
-  return { ...c, books };
+/** Put a book that has just been read in place of its listed (or older) self; null drops it. */
+function replaceBook(id: string, book: GuiBook | null) {
+  const c = state.collection!;
+  const books = book
+    ? c.books.map((b) => (b.id === id ? book : b))
+    : c.books.filter((b) => b.id !== id);
+  state = { ...state, collection: { ...c, books } };
+  push();
 }
 
-/** Read again the books a compress or restore just changed; the rest can't have changed. */
-async function rescan(bookIds: string[], patch: Partial<EngineState> = {}) {
+/**
+ * Read the open collection's books `bookIds`, showing each one as soon as it is read.
+ * `relist` lists each book again first, for books whose files a compress or restore has
+ * just changed. A book that can't be read keeps its place, with the reason.
+ */
+async function readBooks(bookIds: string[], relist: boolean, patch: Partial<EngineState> = {}) {
   const collection = state.collection;
   const ffmpeg = state.ffmpeg;
-  if (!collection || !ffmpeg) return;
+  const s = store;
+  if (!collection || !ffmpeg || !s) return;
   const targets = collection.books.filter((b) => bookIds.includes(b.id));
   const total = targets.reduce((n, b) => n + b.clips.length, 0);
   let done = 0;
   set({ phase: "scanning", scanProgress: { folder: collection.folder, done, total } });
-  const fresh = new Map<string, GuiBook | null>();
-  try {
-    for (const b of targets) {
-      const book = await scanBook(ffmpeg, b.folder, () =>
-        showScanProgress(collection.folder, ++done, total),
-      );
-      fresh.set(b.id, book && (await withOriginals(book, store!)));
+  const onClip = () => showScanProgress(collection.folder, ++done, total);
+  await mapLimit(targets, 4, async (b) => {
+    let book: GuiBook | null;
+    if (READ_DELAY_MS) await new Promise((r) => setTimeout(r, READ_DELAY_MS));
+    try {
+      const listed = relist ? await listBook(b.folder) : b;
+      book = listed && (await withOriginals(await readBook(ffmpeg, listed, onClip), s));
+    } catch (e) {
+      book = { ...b, read: false, error: (e as Error).message };
     }
-  } catch (e) {
-    set({
-      ...patch,
-      phase: "idle",
-      scanProgress: null,
-      error: `Couldn't read the books again: ${(e as Error).message}`,
-    });
-    throw e;
-  }
-  const books = collection.books
-    .map((b) => (fresh.has(b.id) ? fresh.get(b.id)! : b))
-    .filter((b): b is GuiBook => b !== null);
+    replaceBook(b.id, book);
+  });
   set({
     ...patch,
-    collection: { ...collection, books },
-    restorableBookIds: await store!.restorableBookIds(books),
+    restorableBookIds: await s.restorableBookIds(state.collection!.books),
     clips: {},
     job: null,
     scanProgress: null,
@@ -277,7 +281,7 @@ async function rescan(bookIds: string[], patch: Partial<EngineState> = {}) {
   });
 }
 
-/** Scan `folder` and make it the current collection. */
+/** Open `folder`: list its books, and return; then read them, showing each as it is read. */
 export async function openCollection(folder: string): Promise<void> {
   requireIdle();
   if (!(await isBloomCollection(folder))) {
@@ -285,37 +289,38 @@ export async function openCollection(folder: string): Promise<void> {
   }
   const ffmpeg = await ensureFfmpeg();
   if (!ffmpeg) throw new Error("Couldn't find Bloom's ffmpeg. Install Bloom, then try again.");
-  // The new collection's backup store and previews take over only once it has scanned:
-  // if the scan fails, the previous collection stays open, and compressing its books must
-  // still keep their originals in its own store.
-  const candidate = new BackupStore(BACKUP_ROOT, folder);
-  set({ phase: "scanning", error: null });
+  set({ phase: "scanning", scanProgress: null, error: null });
+  let listed: Collection;
   try {
-    const collection = await scan(ffmpeg, folder, candidate);
-    const restorableBookIds = await candidate.restorableBookIds(collection.books);
-    store = candidate;
-    await rmDir(previewDir);
-    previewDir = null;
-    set({
-      collection,
-      restorableBookIds,
-      clips: {},
-      job: null,
-      stopped: false,
-      previews: {},
-      lastCompress: null,
-      lastRestore: null,
-      scanProgress: null,
-      phase: "idle",
-    });
+    listed = await listCollection(folder);
   } catch (e) {
-    set({
-      phase: "idle",
-      scanProgress: null,
-      error: `Couldn't read ${folder}: ${(e as Error).message}`,
-    });
+    set({ phase: "idle", error: `Couldn't read ${folder}: ${(e as Error).message}` });
     throw e;
   }
+  // The new collection's backup store takes over only once the collection is listed: if
+  // listing fails, the previous collection stays open, and compressing its books must
+  // still keep their originals in its own store.
+  store = new BackupStore(BACKUP_ROOT, folder);
+  await rmDir(previewDir);
+  previewDir = null;
+  set({
+    collection: listed,
+    restorableBookIds: [],
+    clips: {},
+    job: null,
+    stopped: false,
+    previews: {},
+    lastCompress: null,
+    lastRestore: null,
+  });
+  // Not awaited: callers (the first page load among them) get the listing now, and each
+  // book's details arrive as state pushes.
+  void readBooks(
+    listed.books.map((b) => b.id),
+    false,
+  ).catch((e) =>
+    set({ phase: "idle", scanProgress: null, error: `Couldn't read ${folder}: ${e.message}` }),
+  );
 }
 
 /**
@@ -369,7 +374,7 @@ export async function startCompress(bookIds: string[], kbps: number): Promise<vo
   requireIdle();
   const collection = state.collection;
   if (!collection || !state.ffmpeg) throw new Error("no collection open");
-  const books = collection.books.filter((b) => bookIds.includes(b.id));
+  const books = collection.books.filter((b) => b.read && bookIds.includes(b.id));
   await rmDir(workDir);
   workDir = await newWorkFolder("job-");
   abort = new AbortController();
@@ -436,7 +441,7 @@ export async function startCompress(bookIds: string[], kbps: number): Promise<vo
     });
 }
 
-/** Put every finished clip into its book, keeping originals; then rescan. */
+/** Put every finished clip into its book, keeping originals; then read those books again. */
 async function replaceFinished(books: GuiBook[], kbps: number, dir: string) {
   let savedBytes = 0;
   const changed = new Set<string>();
@@ -449,7 +454,7 @@ async function replaceFinished(books: GuiBook[], kbps: number, dir: string) {
       changed.add(book.id);
     }
   }
-  await rescan([...changed], {
+  await readBooks([...changed], true, {
     lastCompress: {
       kbps,
       books: changed.size,
@@ -503,7 +508,7 @@ export async function restore(): Promise<void> {
   await rmDir(previewDir);
   previewDir = null;
   state.previews = {};
-  await rescan(restoring, { lastRestore: result });
+  await readBooks(restoring, true, { lastRestore: result });
 }
 
 /**
