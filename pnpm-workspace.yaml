@@ -1,0 +1,51 @@
+packages:
+  - "packages/*"
+
+# Supply-chain guard: never resolve a package version published less than
+# 7 days ago (10080 minutes). Gives time for compromised/yanked releases to be
+# caught before they enter our lockfile.
+minimumReleaseAge: 10080
+
+# Allow these dependencies to run install/build scripts. sharp ships native
+# binaries and esbuild fetches a platform binary, so both need their scripts.
+allowBuilds:
+  esbuild: true
+  sharp: true
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@latest
+  # NOT @voidzero-dev/vite-plus-test — that package was discontinued at 0.1.24 and
+  # never gained a `vitest` bin entry, so `vp test` can't find one. From vite-plus
+  # 0.2.x on, the toolchain depends on real `vitest` instead; keep this pinned to
+  # the exact version vite-plus's own dependencies name, or `vp test` breaks.
+  vitest: 4.1.10
+  vite-plus: 0.2.7
+overrides:
+  vite: "catalog:"
+  vitest: "catalog:"
+  # Security advisories on transitive-only deps. Dependabot's security updater runs
+  # with update-subdependencies:false, so it cannot bump a package nothing depends on
+  # directly. Overriding here is the only way to get the patched version into the
+  # lockfile. Stay inside each parent's major — an open ">=" range here drags in
+  # nanoid 6 and fast-uri 4, which are ESM-only and break their CJS parents.
+  postcss: "^8.5.25"
+  nanoid: "3.3.17"
+  fast-uri: "^3.1.5"
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"
+minimumReleaseAgeExclude:
+  - vite-plus
+  - "@voidzero-dev/*"
+  - oxlint
+  - "@oxlint/*"
+  - oxlint-tsgolint
+  - "@oxlint-tsgolint/*"
+  - oxfmt
+  - "@oxfmt/*"
+  # Same oxc toolchain family as oxlint/oxfmt above (transitives of the Vite+
+  # @latest catalog), and the guard otherwise blocks every fresh oxc release.
+  - "@oxc-project/*"

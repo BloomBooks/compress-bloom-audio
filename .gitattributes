@@ -1,0 +1,21 @@
+# Normalize line endings to prevent phantom "modified" churn on Windows.
+# The repo is all-LF; pin it explicitly so behavior no longer depends on
+# each contributor's core.autocrlf setting.
+* text=auto eol=lf
+
+# Windows-only scripts conventionally use CRLF (none today, kept for safety).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Treat common binaries as binary so they are never line-ending munged.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary

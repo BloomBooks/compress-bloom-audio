@@ -1,0 +1,30 @@
+{
+  "name": "@compress-bloom-audio/lib",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Compress Bloom Audio core: find ffmpeg, scan a collection's audio, compress and replace it",
+  "license": "MIT",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "vp build",
+    "test": "vp test run",
+    "dev": "vp build --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.24",
+    "typescript": "^5.8.3",
+    "vite": "catalog:",
+    "vite-plugin-dts": "^4.5.4",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  }
+}

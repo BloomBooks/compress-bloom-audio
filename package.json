@@ -1,0 +1,32 @@
+{
+  "name": "compress-bloom-audio-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Compress Bloom Audio — shrink the recorded audio in a Bloom collection",
+  "license": "MIT",
+  "scripts": {
+    "build": "vp run -r build",
+    "build:lib": "vp run -F @compress-bloom-audio/lib build",
+    "test": "vp test run",
+    "test:watch": "vp test watch",
+    "dev": "vp run -r --parallel dev",
+    "app": "vp run -F @compress-bloom-audio/app dev",
+    "app-setup": "vp run -F @compress-bloom-audio/app setup",
+    "app-dev": "vp run -F @compress-bloom-audio/app dev",
+    "app-build": "vp run -F @compress-bloom-audio/app build:win",
+    "format": "vp fmt",
+    "lint": "vp lint",
+    "check": "vp check",
+    "prepare": "vp config",
+    "test:e2e": "vp run -F @compress-bloom-audio/gui test:e2e"
+  },
+  "dependencies": {
+    "sharp": "^0.34.3"
+  },
+  "devDependencies": {
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  },
+  "packageManager": "pnpm@11.5.1"
+}

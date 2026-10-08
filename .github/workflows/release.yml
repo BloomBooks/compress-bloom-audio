@@ -1,0 +1,107 @@
+name: Build & Release Windows Installer
+
+# Release is a DELIBERATE, manual action — it never fires automatically on push.
+# Trigger it either from the terminal (the `/release` skill runs
+# `gh workflow run release.yml`) or from the GitHub Actions "Run workflow" button.
+# Either way CI owns versioning: if the current packages/app/package.json version
+# already has an `app-v<version>` release, CI bumps the patch digit, commits that bump
+# back to master, then builds + publishes the new version. So you can't accidentally
+# collide with an existing release, and you never have to remember to bump by hand.
+#
+# Set dry_run=true to build + upload a test installer artifact without bumping or
+# publishing anything.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build a test installer only — no version bump, no release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # create the release/tag, and push the version-bump commit
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Determine version (bump if the current one is already released)
+        id: v
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./packages/app/package.json').version")
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "Dry run — building $VERSION without bump or release."
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh release view "app-v$VERSION" >/dev/null 2>&1; then
+            NEW=$(node -e "const v=require('./packages/app/package.json').version.split('.').map(Number); v[2]=(v[2]||0)+1; console.log(v.join('.'))")
+            echo "app-v$VERSION already exists — bumping to $NEW."
+            node -e "const fs=require('fs'),p='packages/app/package.json',j=JSON.parse(fs.readFileSync(p,'utf8'));j.version='$NEW';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add packages/app/package.json
+            git commit -m "chore(app): bump version to $NEW for release [skip ci]"
+            # GITHUB_TOKEN pushes don't retrigger workflows, so this won't loop.
+            git push origin HEAD:master
+            VERSION=$NEW
+          else
+            echo "app-v$VERSION has no release yet — releasing it as-is."
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install Vite+ CLI
+        run: npm install -g vite-plus-cli
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        run: node packages/app/scripts/build-installer.mjs
+
+      - name: Upload installer artifact (dry runs only)
+        # Only a dry run needs this — it's the sole way to get the test installer out. A
+        # real release attaches the exe from installer-out directly, and installers kept as
+        # artifacts fill the account's artifact-storage quota. Non-fatal so a full quota
+        # can't sink even a dry run's build.
+        if: ${{ inputs.dry_run }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: BloomAudioCompressor-Setup
+          path: packages/app/installer-out/BloomAudioCompressor-Setup-*.exe
+          if-no-files-found: error
+          # One day: a dry run exists so someone can look at the installer now.
+          retention-days: 1
+
+      - name: Publish GitHub Release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: app-v${{ steps.v.outputs.version }}
+          # Tag the current tip of master (the bump commit, when CI bumped) rather than
+          # the pre-bump SHA that triggered the run.
+          target_commitish: master
+          name: Bloom Audio Compressor ${{ steps.v.outputs.version }}
+          generate_release_notes: true
+          # Not a draft: the installed app's updater reads the releases API's "latest",
+          # which never returns a draft, so a draft would never reach anyone.
+          draft: false
+          files: packages/app/installer-out/BloomAudioCompressor-Setup-*.exe

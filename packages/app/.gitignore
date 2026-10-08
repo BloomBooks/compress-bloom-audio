@@ -1,0 +1,15 @@
+# Neutralino framework binaries + client lib/types (fetched by `neu update`)
+/bin/
+/resources/js/
+/extensions/
+
+# Build / release output
+/dist/
+/.tmp/
+/stage/
+/installer-out/
+/.cache/
+
+# Logs
+neutralinojs.log
+node_modules/

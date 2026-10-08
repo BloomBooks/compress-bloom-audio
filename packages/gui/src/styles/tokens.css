@@ -1,0 +1,91 @@
+/* Tokens from the SIL Language Technology design system (the claude.ai/design project
+   "Compress Audio"): tokens/colors.css, spacing.css, typography.css and app.css, cut down
+   to what this app uses. Keep names identical to the design system's so a value can be
+   checked against it. */
+
+:root {
+  /* colors.css */
+  --sil-blue: #005cb9;
+  --sil-light-blue: #00a7e1;
+  --sil-red: #d52227;
+  --sil-orange: #ff6b00;
+  --sil-green: #509e2f;
+  --sil-yellow-dark: #d99408;
+  --sil-blue-dark: #034d8a;
+  --sil-red-dark: #a6121f;
+  --sil-green-dark: #38751c;
+  --sil-blue-10: #e5eef8;
+  --sil-blue-05: #f2f7fb;
+  --sil-light-blue-10: #e5f6fc;
+  --sil-light-blue-30: #b3e5f6;
+  --sil-red-10: #fbe8e9;
+  --sil-green-10: #edf5ea;
+  --sil-yellow-10: #fff8e8;
+  --sil-gray-40: #c2c2c2;
+  --border-default: var(--sil-gray-40);
+
+  /* typography.css */
+  --font-display: "Playfair Display", Georgia, "Times New Roman", serif;
+  --font-label:
+    "Source Sans 3", "Source Sans Pro", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* spacing.css */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --shadow-focus: 0 0 0 3px rgba(0, 167, 225, 0.4);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 140ms;
+
+  /* app.css */
+  --app-font: "Source Sans 3", "Source Sans Pro", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --app-font-mono: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
+  --app-bg: #f3f5f7;
+  --app-surface: #ffffff;
+  --app-surface-2: #f8fafb;
+  --app-border: #e3e7eb;
+  --app-border-strong: #cfd6dc;
+  --app-text: #18242e;
+  --app-text-muted: #5b6976;
+  --app-text-subtle: #8995a1;
+  --app-radius: 8px;
+  --app-radius-sm: 6px;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--app-font);
+  color: var(--app-text);
+  background: var(--app-surface);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+input:focus-visible + span,
+input[type="range"]:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

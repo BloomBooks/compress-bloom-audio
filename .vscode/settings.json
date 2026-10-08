@@ -1,0 +1,35 @@
+{
+  "cSpell.words": [
+    "ffmpeg",
+    "kbps",
+    "libmp3lame",
+    "neutralino",
+    "oxfmt",
+    "oxlint",
+    "vite",
+    "viteplus",
+    "vitest",
+    "voidzero"
+  ],
+  // Format on save with the Vite+ / oxc formatter (vp fmt), reading config
+  // from vite.config.ts so the editor matches the pre-commit hook exactly.
+  // Requires the recommended "VoidZero.vite-plus-extension-pack" extension.
+  "editor.formatOnSave": true,
+  "editor.formatOnSaveMode": "file",
+  "oxc.fmt.configPath": "./vite.config.ts",
+  "[typescript]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  }
+}
