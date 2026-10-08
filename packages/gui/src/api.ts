@@ -152,9 +152,13 @@ export async function pickFolder(initial?: string): Promise<string | null> {
 
 export const api = {
   startup: async () =>
-    parseOrThrow<{ settings: Settings; version: string; state: EngineState }>(
-      await fetch("/api/startup"),
-    ),
+    parseOrThrow<{
+      settings: Settings;
+      version: string;
+      /** Documents\Bloom, where Bloom keeps collections; the folder picker opens there. */
+      bloomFolder: string | null;
+      state: EngineState;
+    }>(await fetch("/api/startup")),
   saveSettings: (patch: Partial<Settings>) => post<Settings>("/api/settings", patch),
   openCollection: (folder: string) => post("/api/collection", { folder }),
   compress: (bookIds: string[], kbps: number) => post("/api/compress", { bookIds, kbps }),

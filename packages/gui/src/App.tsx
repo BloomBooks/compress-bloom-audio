@@ -65,6 +65,7 @@ function useAudioPlayer() {
 export function App() {
   const [state, setState] = React.useState<EngineState | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
+  const [bloomFolder, setBloomFolder] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
   const [advanced, setAdvanced] = React.useState(false);
@@ -80,6 +81,7 @@ export function App() {
       .startup()
       .then((r) => {
         setSettings(r.settings);
+        setBloomFolder(r.bloomFolder);
         setState(r.state);
       })
       .catch((e) => setActionError(String(e.message || e)));
@@ -121,7 +123,7 @@ export function App() {
   };
   const chooseCollection = () =>
     run(
-      pickFolder(state.collection?.folder || undefined).then((folder) => {
+      pickFolder(bloomFolder ?? undefined).then((folder) => {
         if (folder) return api.openCollection(folder);
       }),
     );
@@ -572,7 +574,10 @@ export function App() {
                       {b.clips.map((c) => {
                         const key = `${b.id}/${c.file}`;
                         const s = inJob ? state.clips[key] : undefined;
-                        const done = s?.status === "done" || s?.status === "skipped";
+                        // Set when the last run replaced this clip: its size before that run.
+                        const before = justCompressedBefore(state, b.id, c.file, kbps);
+                        const done =
+                          s?.status === "done" || s?.status === "skipped" || before !== undefined;
                         const unchanged = isUnchanged(c, k);
                         const previewBytes = state.previews[`${key}@${k}`];
                         const a = clipAfter(c, s, k, previewBytes);
@@ -580,7 +585,6 @@ export function App() {
                         const canSecond = (done || ph === "idle") && !encoding && !state.encoding;
                         const p = player.playing?.key === key ? player.playing : null;
                         const second: Which = done ? "after" : "preview";
-                        const before = justCompressedBefore(state, b.id, c.file, kbps);
                         const afterText =
                           before !== undefined
                             ? fmtBytes(c.bytes)
@@ -589,7 +593,7 @@ export function App() {
                               : done
                                 ? fmtBytes(a.bytes)
                                 : unchanged
-                                  ? `${fmtBytes(c.bytes)} (no change)`
+                                  ? fmtBytes(c.bytes)
                                   : (a.actual ? "" : "~") + fmtBytes(a.bytes);
                         const playSecond = () => {
                           if (!canSecond) return;
@@ -631,20 +635,14 @@ export function App() {
                               {c.label}
                             </div>
                             <div style={{ textAlign: "right" }}>{fmtDuration(c.durationSec)}</div>
-                            <Num>{fmtBytes(before ?? c.bytes)}</Num>
-                            {/* Spans the empty Saved column too, so "(no change)" fits on one line. */}
-                            <div
-                              style={{
-                                gridColumn: "span 2",
-                                paddingRight: 60,
-                                textAlign: "right",
-                                whiteSpace: "nowrap",
-                                fontVariantNumeric: "tabular-nums",
-                                color: s?.status === "failed" ? "var(--sil-red)" : undefined,
-                              }}
+                            <Num cell="before">{fmtBytes(before ?? c.bytes)}</Num>
+                            <Num
+                              cell="after"
+                              color={s?.status === "failed" ? "var(--sil-red)" : undefined}
                             >
                               {afterText}
-                            </div>
+                            </Num>
+                            <div />
                             <div
                               style={{
                                 paddingLeft: 16,
@@ -833,12 +831,30 @@ function RestoreLink({ onClick }: { onClick: () => void }) {
   );
 }
 
-function Num({ children, color }: { children: React.ReactNode; color?: string }) {
+function Num({
+  children,
+  color,
+  cell,
+}: {
+  children: React.ReactNode;
+  color?: string;
+  cell?: string;
+}) {
   return (
-    <div style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color }}>{children}</div>
+    <div
+      data-cell={cell}
+      style={{
+        textAlign: "right",
+        fontVariantNumeric: "tabular-nums",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        color,
+      }}
+    >
+      {children}
+    </div>
   );
 }
-
 function Centered({ children }: { children: React.ReactNode }) {
   return (
     <div

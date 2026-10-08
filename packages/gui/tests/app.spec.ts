@@ -1,7 +1,7 @@
 /* End-to-end: the real UI, the real server, Bloom's real ffmpeg, against a throwaway
    collection (tests/fixture.ts). Each test builds its own collection and opens it the way
    the folder picker would, through POST /api/collection. */
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -38,6 +38,30 @@ const row = (page: Page, title: string) => page.locator(`[data-book="${title}"]`
 const clip = (page: Page, title: string, file: string) =>
   row(page, title).locator(`[data-clip="${file}"]`);
 
+/** Click a clip's play button and return the size of the audio the page fetched for it. */
+async function playedBytes(page: Page, clipRow: Locator, button: string, which: string) {
+  const [res] = await Promise.all([
+    page.waitForResponse(
+      (r) => r.url().includes("/api/audio") && r.url().includes(`which=${which}`),
+    ),
+    clipRow.getByRole("button", { name: button }).click(),
+  ]);
+  expect(res.status()).toBeLessThan(300);
+  const range = res.headers()["content-range"]; // "bytes 0-1234/5678" when the player asks for a range
+  if (range) return Number(range.split("/")[1]);
+  return Number(res.headers()["content-length"]);
+}
+
+/** No Before/After cell overflows into its neighbour (they are nowrap, so overflow shows as overlap). */
+async function expectSizesFit(page: Page) {
+  const overflowing = await page
+    .locator("[data-cell]")
+    .evaluateAll((els) =>
+      els.filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent),
+    );
+  expect(overflowing).toEqual([]);
+}
+
 async function expand(page: Page, title: string) {
   await row(page, title).getByRole("button", { name: title }).click();
 }
@@ -70,6 +94,7 @@ test("lists the books and names each clip after its page", async ({ page }) => {
   for (const [file, label] of Object.entries(book(MOON).clips)) {
     await expect(clip(page, MOON, file)).toContainText(label);
   }
+  await expectSizesFit(page);
 });
 
 test("preview encodes one clip and leaves the book alone", async ({ page }) => {
@@ -103,9 +128,20 @@ test("compress replaces the audio, keeps originals outside the books, and restor
   ]);
   expect(await fs.readdir(E2E_ENV.COMPRESS_BLOOM_AUDIO_BACKUPS)).toHaveLength(1);
 
-  // The just-compressed clips still show what they were, not "(no change)".
+  // The just-compressed clips still show what they were, and every size fits its column.
   await expand(page, MOON);
-  await expect(clip(page, MOON, "a1.mp3")).not.toContainText("no change");
+  const a1 = clip(page, MOON, "a1.mp3");
+  expect(await a1.locator("[data-cell=before]").innerText()).not.toBe(
+    await a1.locator("[data-cell=after]").innerText(),
+  );
+  await expectSizesFit(page);
+
+  // Its second button is now "After", and plays the compressed file now in the book;
+  // "Before" plays the original we kept.
+  await expect(a1.getByRole("button", { name: "Play after" })).toBeVisible();
+  await expect(a1.getByRole("button", { name: /preview/i })).toHaveCount(0);
+  expect(await playedBytes(page, a1, "Play after", "after")).toBe(after["a1.mp3"]);
+  expect(await playedBytes(page, a1, "Play before", "before")).toBe(originalSizes["a1.mp3"]);
 
   await page.getByRole("button", { name: "Restore original audio…" }).click();
   await expect(page.getByText("Put back the original recordings in 2 books?")).toBeVisible();
@@ -138,6 +174,10 @@ test("compressing again at another setting starts from the originals", async ({ 
   // A third run at the same setting has nothing to do.
   await compressAll(page, 24, /Nothing to compress: every clip is already at 24 kbps/);
   expect(await sizes(book(MOON))).toEqual(at24);
+  // Every clip now reads "already at the target"; its sizes must still fit their columns.
+  await expand(page, MOON);
+  await expect(clip(page, MOON, "a1.mp3")).toBeVisible();
+  await expectSizesFit(page);
 });
 
 test("restore leaves a clip alone that was recorded again after compressing", async ({ page }) => {

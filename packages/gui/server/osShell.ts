@@ -66,7 +66,14 @@ export async function pickFolder(initial?: string): Promise<string | null> {
     // foreground change), and an owned dialog renders above its owner — so the dialog
     // lands above the browser. An off-screen owner does NOT work; the owner must be
     // visible and on-screen, so it's centered (the dialog opens over it and covers it).
-    const start = initial ? `$d.SelectedPath = '${initial.replace(/'/g, "")}';` : "";
+    // PowerShell 7 (.NET 8) shows the modern Explorer-style picker and can open IN a
+    // folder (InitialDirectory). Windows PowerShell 5.1 (.NET Framework) only has the old
+    // tree dialog, and given a SelectedPath it often fills in just that one branch, hiding
+    // the folder's siblings — so pwsh is tried first.
+    const q = initial ? `'${initial.replace(/'/g, "")}'` : "";
+    const start = initial
+      ? `if ($d.PSObject.Properties['InitialDirectory']) { $d.InitialDirectory = ${q} } else { $d.SelectedPath = ${q} }`
+      : "";
     const ps = `
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -85,7 +92,7 @@ $r = $d.ShowDialog($owner)
 $owner.Close()
 if ($r -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }
 `;
-    cmd = "powershell";
+    cmd = "pwsh";
     args = ["-NoProfile", "-STA", "-Command", ps];
   } else if (process.platform === "darwin") {
     const loc = initial ? ` default location (POSIX file "${initial.replace(/"/g, "")}")` : "";
@@ -96,18 +103,19 @@ if ($r -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.Se
     args = ["--file-selection", "--directory", "--title=Choose a Bloom collection"];
     if (initial) args.push(`--filename=${initial.replace(/\/?$/, "/")}`);
   }
-  return new Promise((resolve) => {
-    let out = "";
-    try {
-      const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] });
-      child.stdout.on("data", (b) => (out += b.toString()));
-      child.on("error", () => resolve(null));
-      child.on("close", () => {
-        const picked = out.trim();
-        resolve(picked || null);
-      });
-    } catch {
-      resolve(null);
-    }
-  });
+  const tryRun = (command: string): Promise<string | null> =>
+    new Promise((resolve) => {
+      let out = "";
+      try {
+        const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] });
+        child.stdout.on("data", (b) => (out += b.toString()));
+        // Not installed: fall back from pwsh to Windows PowerShell.
+        child.on("error", () => resolve(command === "pwsh" ? tryRun("powershell") : null));
+        // 'error' (not installed) fires before 'close', so the fallback above wins.
+        child.on("close", () => resolve(out.trim() || null));
+      } catch {
+        resolve(null);
+      }
+    });
+  return tryRun(cmd);
 }

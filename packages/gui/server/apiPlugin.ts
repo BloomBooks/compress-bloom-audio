@@ -16,6 +16,7 @@ import {
 import { getSettings, saveSettings, type Settings } from "./settings";
 import { pickFolder } from "./osShell";
 import { getAppVersion } from "./appVersion";
+import { bloomCollectionsFolder } from "./bloomFolder";
 
 function send(res: ServerResponse, status: number, body: unknown) {
   res.statusCode = status;
@@ -142,7 +143,12 @@ export async function handleApiRequest(
       if (ffmpeg && settings.collection && !getState().collection && getState().phase === "idle") {
         await openCollection(settings.collection).catch(() => {});
       }
-      return send(res, 200, { settings, version: await getAppVersion(), state: getState() });
+      return send(res, 200, {
+        settings,
+        version: await getAppVersion(),
+        bloomFolder: await bloomCollectionsFolder(),
+        state: getState(),
+      });
     }
 
     if (p === "/api/settings" && method === "POST") {

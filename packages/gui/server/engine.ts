@@ -431,8 +431,15 @@ export function clipFile(
   const clip = book?.clips.find((c) => c.file === file);
   if (!book || !clip) return null;
   const inBook = path.join(book.folder, "audio", file);
-  if (which === "before") return inBook;
+  // Once a run has replaced this clip, the book holds the compressed audio: "after" is the
+  // book's file and "before" is the original we kept.
+  const justCompressed =
+    state.phase !== "running" && state.lastCompress?.beforeBytes[key(bookId, file)] !== undefined;
+  if (which === "before") {
+    return justCompressed && clip.original ? store!.originalPath(bookId, file) : inBook;
+  }
   if (which === "after") {
+    if (justCompressed) return inBook;
     const s = state.clips[key(bookId, file)];
     if (s?.status === "skipped") return inBook;
     if (s?.status !== "done" || !workDir) return null;
