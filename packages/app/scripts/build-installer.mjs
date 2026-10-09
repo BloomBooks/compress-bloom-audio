@@ -4,7 +4,7 @@
  * Pipeline:
  *   1. Build lib + gui frontend + gui sidecar bundle.
  *   2. Ensure Neutralino binaries/client, then `neu build --release`.
- *   3. Download + cache a portable node.exe.
+ *   3. Download + cache a portable node.exe, and Xiph's opusenc.exe (ensure-opusenc.mjs).
  *   4. Assemble stage/ — the exact install image (see plan / README).
  *   5. Compile installer/bloom-audio-compressor.iss with Inno Setup (ISCC) → installer-out/.
  *
@@ -18,6 +18,7 @@ import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
+import { ensureOpusenc, OPUS_TOOLS_DIR } from "./ensure-opusenc.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_DIR = path.resolve(__dirname, ".."); // packages/app
@@ -173,6 +174,16 @@ async function assembleStage(nodeExe) {
   // (b) Portable Node.
   await fsp.copyFile(nodeExe, path.join(STAGE, "node.exe"));
 
+  // (b1) opusenc, beside node.exe, where the engine looks for it (lib/src/opus.ts), with
+  //      its BSD licence.
+  log("opusenc");
+  const opusenc = await ensureOpusenc();
+  await fsp.copyFile(opusenc, path.join(STAGE, "opusenc.exe"));
+  await fsp.copyFile(
+    path.join(OPUS_TOOLS_DIR, "LICENSE"),
+    path.join(STAGE, "opus-tools-LICENSE.txt"),
+  );
+
   // (b2) App icon (.ico) for the installer + shortcuts (the .iss references {app}\appIcon.ico).
   await fsp.copyFile(
     path.join(APP_DIR, "resources", "icons", "appIcon.ico"),
@@ -197,9 +208,10 @@ async function assembleStage(nodeExe) {
     JSON.stringify({ version: appVersion }, null, 2),
   );
 
-  // (d) node_modules holds only the built lib: the lib has no runtime dependencies (it
-  //     spawns Bloom's ffmpeg rather than bundling one), and the sidecar bundle marks
-  //     every package external, so this is all serve.cjs needs to resolve.
+  // (d) node_modules holds only the built lib: the lib's build bundles its one runtime
+  //     dependency (the mp3 decoder) into its dist, externalizing only Node's built-ins,
+  //     and the sidecar bundle marks every package external, so this is all serve.cjs
+  //     needs to resolve.
   const libPkg = readJson(path.join(LIB, "package.json"));
   const libDest = path.join(appDir, "node_modules", "@compress-bloom-audio", "lib");
   await fsp.mkdir(libDest, { recursive: true });

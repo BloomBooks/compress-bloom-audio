@@ -12,6 +12,7 @@ import {
   compressClip,
   defaultBackupRoot,
   findFfmpeg,
+  findOpusenc,
   isBloomCollection,
   listBook,
   listCollection,
@@ -21,6 +22,7 @@ import {
   type Clip,
   type Collection,
   type RestoreResult,
+  type Target,
 } from "@compress-bloom-audio/lib";
 
 export type Phase = "idle" | "scanning" | "running" | "restoring";
@@ -49,20 +51,22 @@ export interface GuiCollection extends Omit<Collection, "books"> {
 export interface EngineState {
   phase: Phase;
   ffmpeg: string | null;
+  /** The Opus encoder, when the app has one (lib/src/opus.ts). */
+  opusenc: string | null;
   collection: GuiCollection | null;
   /** Keyed `<bookId>/<file>`. Only clips of books in the running job appear. */
   clips: Record<string, ClipState>;
-  job: { bookIds: string[]; kbps: number } | null;
+  job: { bookIds: string[]; target: Target } | null;
   stopped: boolean;
   /** Books with originals that Restore would put back. */
   restorableBookIds: string[];
-  /** Size of each preview encoded so far, keyed `<bookId>/<file>@<kbps>`. */
+  /** Size of each preview encoded so far, keyed `<bookId>/<file>@<targetKey>`. */
   previews: Record<string, number>;
   /** The clip being encoded for a preview, keyed `<bookId>/<file>`. */
   encoding: string | null;
   /** The outcome of the last compress, until the next action. */
   lastCompress: {
-    kbps: number;
+    target: Target;
     books: number;
     savedBytes: number;
     stopped: boolean;
@@ -129,6 +133,7 @@ const READ_DELAY_MS = Number(process.env.COMPRESS_BLOOM_AUDIO_TEST_READ_DELAY_MS
 let state: EngineState = {
   phase: "idle",
   ffmpeg: null,
+  opusenc: null,
   collection: null,
   clips: {},
   job: null,
@@ -193,6 +198,10 @@ export function isEngineBusy(): boolean {
 
 const key = (bookId: string, file: string) => `${bookId}/${file}`;
 
+/** A target as a name: "48" for mp3 at 48 kbps, "opus24" for Opus at 24. Mirrored in
+ *  src/model.ts, which keys previews the same way. */
+export const targetKey = (t: Target) => (t.codec === "opus" ? `opus${t.kbps}` : String(t.kbps));
+
 function requireIdle() {
   if (state.phase !== "idle") throw new Error(`can't do that while ${state.phase}`);
   // A preview encode reads the open collection's originals and writes into its preview
@@ -206,6 +215,7 @@ async function rmDir(dir: string | null) {
 
 export async function ensureFfmpeg(): Promise<string | null> {
   if (!state.ffmpeg) set({ ffmpeg: await findFfmpeg() });
+  if (!state.opusenc) set({ opusenc: findOpusenc() });
   return state.ffmpeg;
 }
 
@@ -324,21 +334,24 @@ export async function openCollection(folder: string): Promise<void> {
 }
 
 /**
- * What compressing a clip to `kbps` means. A clip we have compressed before is worked from
- * its kept original, so quality is never lost twice: "skip" when it is already at `kbps`,
- * "original" when the original is at or below `kbps` (so the best result is the original
- * itself). A clip never compressed is skipped when it is already at or below `kbps`.
+ * What compressing a clip to `t` means. A clip we have compressed before is worked from
+ * its kept original, so quality is never lost twice: "skip" when it is already at the
+ * target, "original" when the original is at or below the target's bitrate (so the best
+ * result is the original itself). A clip never compressed is skipped when it is already at
+ * or below the target's bitrate, or is already Opus (nothing here can decode Opus).
+ * Mirrored by `isUnchanged` in src/model.ts.
  */
 export function plan(
   clip: GuiClip,
-  kbps: number,
+  t: Target,
 ): { kind: "skip" } | { kind: "original" } | { kind: "encode"; fromOriginal: boolean } {
   if (clip.original) {
-    if (clip.original.currentKbps === kbps) return { kind: "skip" };
-    if (clip.original.kbps > 0 && clip.original.kbps <= kbps) return { kind: "original" };
+    if (clip.original.currentKbps === t.kbps && clip.codec === t.codec) return { kind: "skip" };
+    if (clip.original.kbps > 0 && clip.original.kbps <= t.kbps) return { kind: "original" };
     return { kind: "encode", fromOriginal: true };
   }
-  if (clip.kbps > 0 && clip.kbps <= kbps) return { kind: "skip" };
+  if (clip.codec === "opus") return { kind: "skip" };
+  if (clip.kbps > 0 && clip.kbps <= t.kbps) return { kind: "skip" };
   return { kind: "encode", fromOriginal: false };
 }
 
@@ -352,26 +365,29 @@ function sourceOf(book: GuiBook, clip: GuiClip, fromOriginal: boolean): string {
 async function produce(
   book: GuiBook,
   clip: GuiClip,
-  kbps: number,
+  t: Target,
   dest: string,
   opts: { signal?: AbortSignal; onProgress?: (p: number) => void } = {},
 ): Promise<number | null> {
-  const p = plan(clip, kbps);
+  const p = plan(clip, t);
   if (p.kind === "skip") throw new Error("nothing to do");
   if (p.kind === "original") {
     await fs.mkdir(path.dirname(dest), { recursive: true });
     await fs.copyFile(store!.originalPath(book.id, clip.file), dest);
     return (await fs.stat(dest)).size;
   }
-  return compressClip(state.ffmpeg!, sourceOf(book, clip, p.fromOriginal), dest, kbps, {
+  const tools = { ffmpeg: state.ffmpeg!, opusenc: state.opusenc };
+  return compressClip(tools, sourceOf(book, clip, p.fromOriginal), dest, t, {
     durationSec: clip.durationSec,
     ...opts,
   });
 }
 
 /** Compress the chosen books, then replace their audio, keeping the originals. */
-export async function startCompress(bookIds: string[], kbps: number): Promise<void> {
+export async function startCompress(bookIds: string[], t: Target): Promise<void> {
   requireIdle();
+  if (t.codec === "opus" && !state.opusenc)
+    throw new Error("Opus isn't available: opusenc.exe wasn't found");
   const collection = state.collection;
   if (!collection || !state.ffmpeg) throw new Error("no collection open");
   const books = collection.books.filter((b) => b.read && bookIds.includes(b.id));
@@ -384,7 +400,7 @@ export async function startCompress(bookIds: string[], kbps: number): Promise<vo
   const queue: { book: GuiBook; clip: GuiClip }[] = [];
   for (const book of books) {
     for (const clip of book.clips) {
-      if (plan(clip, kbps).kind === "skip") {
+      if (plan(clip, t).kind === "skip") {
         clips[key(book.id, clip.file)] = { status: "skipped", progress: 1, afterBytes: clip.bytes };
       } else {
         clips[key(book.id, clip.file)] = { status: "pending", progress: 0 };
@@ -395,7 +411,7 @@ export async function startCompress(bookIds: string[], kbps: number): Promise<vo
   set({
     phase: "running",
     clips,
-    job: { bookIds, kbps },
+    job: { bookIds, target: t },
     stopped: false,
     lastCompress: null,
     lastRestore: null,
@@ -411,7 +427,7 @@ export async function startCompress(bookIds: string[], kbps: number): Promise<vo
       state.clips[k] = { status: "running", progress: 0 };
       push();
       try {
-        const size = await produce(book, clip, kbps, path.join(dir, book.id, clip.file), {
+        const size = await produce(book, clip, t, path.join(dir, book.id, clip.file), {
           signal,
           onProgress: (p) => {
             state.clips[k] = { ...state.clips[k], progress: p };
@@ -430,7 +446,7 @@ export async function startCompress(bookIds: string[], kbps: number): Promise<vo
   };
   // Not awaited: the HTTP request returns at once and progress flows over SSE.
   void Promise.all(Array.from({ length: PARALLEL }, worker))
-    .then(() => replaceFinished(books, kbps, dir))
+    .then(() => replaceFinished(books, t, dir))
     .catch((e) =>
       set({ phase: "idle", error: `Replacing the audio failed: ${(e as Error).message}` }),
     )
@@ -442,21 +458,21 @@ export async function startCompress(bookIds: string[], kbps: number): Promise<vo
 }
 
 /** Put every finished clip into its book, keeping originals; then read those books again. */
-async function replaceFinished(books: GuiBook[], kbps: number, dir: string) {
+async function replaceFinished(books: GuiBook[], t: Target, dir: string) {
   let savedBytes = 0;
   const changed = new Set<string>();
   for (const book of books) {
     for (const clip of book.clips) {
       const s = state.clips[key(book.id, clip.file)];
       if (s?.status !== "done") continue;
-      await store!.replace(book, clip.file, path.join(dir, book.id, clip.file), kbps, clip.kbps);
+      await store!.replace(book, clip.file, path.join(dir, book.id, clip.file), t.kbps, clip.kbps);
       savedBytes += clip.bytes - (s.afterBytes ?? clip.bytes);
       changed.add(book.id);
     }
   }
   await readBooks([...changed], true, {
     lastCompress: {
-      kbps,
+      target: t,
       books: changed.size,
       savedBytes,
       stopped: state.stopped,
@@ -473,19 +489,22 @@ export function stopCompress(): void {
   abort?.abort();
 }
 
-/** Encode one clip at `kbps` so it can be listened to before compressing anything. */
-export async function preview(bookId: string, file: string, kbps: number): Promise<void> {
+/** Encode one clip as `t` so it can be listened to before compressing anything. */
+export async function preview(bookId: string, file: string, t: Target): Promise<void> {
   requireIdle();
+  if (t.codec === "opus" && !state.opusenc)
+    throw new Error("Opus isn't available: opusenc.exe wasn't found");
   const book = state.collection?.books.find((b) => b.id === bookId);
   const clip = book?.clips.find((c) => c.file === file);
   if (!book || !clip) throw new Error("no such clip");
-  const pk = `${key(bookId, file)}@${kbps}`;
-  if (pk in state.previews || plan(clip, kbps).kind === "skip") return;
+  const pk = `${key(bookId, file)}@${targetKey(t)}`;
+  if (pk in state.previews || plan(clip, t).kind === "skip") return;
   // Claim the encoder before any await, so two requests can't both start one.
   set({ encoding: key(bookId, file) });
   try {
     previewDir ??= await newWorkFolder("preview-");
-    const size = await produce(book, clip, kbps, path.join(previewDir, String(kbps), bookId, file));
+    const dest = path.join(previewDir, targetKey(t), bookId, file);
+    const size = await produce(book, clip, t, dest);
     if (size !== null) state.previews = { ...state.previews, [pk]: size };
   } finally {
     set({ encoding: null });
@@ -517,13 +536,13 @@ export async function restore(): Promise<void> {
  *   never compressed the clip;
  * - "current": the file in the book now;
  * - "after": a clip the running job has finished, before it replaces the book's file;
- * - "preview": the clip encoded at `kbps`.
+ * - "preview": the clip encoded as `t`.
  */
 export function clipFile(
   bookId: string,
   file: string,
   which: "original" | "current" | "after" | "preview",
-  kbps: number,
+  t: Target,
 ): string | null {
   const book = state.collection?.books.find((b) => b.id === bookId);
   const clip = book?.clips.find((c) => c.file === file);
@@ -537,7 +556,7 @@ export function clipFile(
     if (s?.status !== "done" || !workDir) return null;
     return path.join(workDir, bookId, file);
   }
-  if (plan(clip, kbps).kind === "skip") return inBook;
-  if (!previewDir || !(`${key(bookId, file)}@${kbps}` in state.previews)) return null;
-  return path.join(previewDir, String(kbps), bookId, file);
+  if (plan(clip, t).kind === "skip") return inBook;
+  if (!previewDir || !(`${key(bookId, file)}@${targetKey(t)}` in state.previews)) return null;
+  return path.join(previewDir, targetKey(t), bookId, file);
 }

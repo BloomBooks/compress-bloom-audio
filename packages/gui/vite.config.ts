@@ -1,5 +1,6 @@
 import type { ConfigEnv, UserConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 // From apiDevPlugin, not apiPlugin: this import is bundled into the config, so it must not
 // reach @compress-bloom-audio/lib as a value — that would resolve the lib to its built dist,
@@ -17,6 +18,18 @@ import { compressApiPlugin } from "./server/apiDevPlugin";
 // keeps importing the built dist.
 const libSource = fileURLToPath(new URL("../lib/src/index.ts", import.meta.url));
 
+/** In dev, the engine encodes Opus with the opusenc that ensure-opusenc.mjs fetches into
+ *  packages/app/.cache (the installed app has its own beside node.exe). If it can't be
+ *  fetched, the dev server still starts, without Opus. */
+function useCachedOpusenc() {
+  if (process.env.COMPRESS_BLOOM_AUDIO_OPUSENC) return;
+  const script = fileURLToPath(new URL("../app/scripts/ensure-opusenc.mjs", import.meta.url));
+  const r = spawnSync(process.execPath, [script], { encoding: "utf8" });
+  const found = r.status === 0 ? r.stdout.trim() : "";
+  if (found) process.env.COMPRESS_BLOOM_AUDIO_OPUSENC = found;
+  else console.warn(`[compress-bloom-audio] no opusenc, so no Opus: ${r.stderr.trim()}`);
+}
+
 /**
  * Annotated and declared separately rather than written inline in `defineConfig(...)`.
  * Inline, TypeScript infers this whole object and then structurally compares it against
@@ -27,6 +40,7 @@ const libSource = fileURLToPath(new URL("../lib/src/index.ts", import.meta.url))
  */
 function guiConfig({ command }: ConfigEnv): UserConfig {
   const dev = command === "serve";
+  if (dev) useCachedOpusenc();
   return {
     plugins: [...react(), compressApiPlugin()],
     resolve: dev ? { alias: { "@compress-bloom-audio/lib": libSource } } : {},

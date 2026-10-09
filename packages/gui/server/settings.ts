@@ -7,12 +7,16 @@ import * as path from "node:path";
 export interface Settings {
   collection: string;
   preset: "speech" | "balanced" | "high" | "custom";
+  /** Compress to Opus (in files still named .mp3) rather than mp3. */
+  opus: boolean;
+  /** The bitrate for the chosen codec. */
   kbps: number;
 }
 
 const DEFAULTS: Settings = {
   collection: "",
   preset: "balanced",
+  opus: false,
   kbps: 48,
 };
 

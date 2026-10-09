@@ -3,11 +3,19 @@
 export type Phase = "idle" | "scanning" | "running" | "restoring";
 export type ClipStatus = "pending" | "running" | "done" | "skipped" | "failed";
 export type ClipKind = "narration" | "music" | "unused";
+/** What a clip is encoded as. Either way its file is named .mp3. */
+export type Codec = "mp3" | "opus";
+/** What to compress to. */
+export interface Target {
+  codec: Codec;
+  kbps: number;
+}
 
 export interface Clip {
   file: string;
   label: string;
   kind: ClipKind;
+  codec: Codec;
   /** What is in the book now. */
   bytes: number;
   durationSec: number;
@@ -40,15 +48,16 @@ export interface ClipState {
 export interface EngineState {
   phase: Phase;
   ffmpeg: string | null;
+  opusenc: string | null;
   collection: Collection | null;
   clips: Record<string, ClipState>;
-  job: { bookIds: string[]; kbps: number } | null;
+  job: { bookIds: string[]; target: Target } | null;
   stopped: boolean;
   restorableBookIds: string[];
   previews: Record<string, number>;
   encoding: string | null;
   lastCompress: {
-    kbps: number;
+    target: Target;
     books: number;
     savedBytes: number;
     stopped: boolean;
@@ -68,6 +77,7 @@ export type Preset = "speech" | "balanced" | "high" | "custom";
 export interface Settings {
   collection: string;
   preset: Preset;
+  opus: boolean;
   kbps: number;
 }
 async function parseOrThrow<T>(res: Response): Promise<T> {
@@ -167,9 +177,9 @@ export const api = {
     }>(await fetch("/api/startup")),
   saveSettings: (patch: Partial<Settings>) => post<Settings>("/api/settings", patch),
   openCollection: (folder: string) => post("/api/collection", { folder }),
-  compress: (bookIds: string[], kbps: number) => post("/api/compress", { bookIds, kbps }),
+  compress: (bookIds: string[], t: Target) => post("/api/compress", { bookIds, ...t }),
   stop: () => post("/api/stop"),
-  preview: (book: string, file: string, kbps: number) => post("/api/preview", { book, file, kbps }),
+  preview: (book: string, file: string, t: Target) => post("/api/preview", { book, file, ...t }),
   restore: () => post("/api/restore"),
   /** Dev server only: swap in the changed server code now, abandoning the running job. */
   devReload: () => post("/api/dev-reload"),
@@ -177,8 +187,9 @@ export const api = {
     book: string,
     file: string,
     which: "original" | "current" | "after" | "preview",
-    kbps: number,
-  ) => `/api/audio?${new URLSearchParams({ book, file, which, kbps: String(kbps) })}`,
+    t: Target,
+  ) =>
+    `/api/audio?${new URLSearchParams({ book, file, which, codec: t.codec, kbps: String(t.kbps) })}`,
 };
 /** Subscribe to the server's state snapshots. Returns an unsubscribe function. */
 /** Subscribe to the server's state snapshots. `onReloadPending` hears from the dev server

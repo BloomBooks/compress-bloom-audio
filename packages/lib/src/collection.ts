@@ -8,13 +8,14 @@ import {
   readBookTitle,
   type ClipKind,
 } from "./bookAudio";
-import { probeAudio } from "./probe";
+import { probeAudio, type Codec } from "./probe";
 
 export interface Clip {
   /** File name inside the book's audio folder. */
   file: string;
   label: string;
   kind: ClipKind;
+  codec: Codec;
   bytes: number;
   durationSec: number;
   kbps: number;
@@ -76,6 +77,7 @@ export async function listBook(bookFolder: string): Promise<Book | null> {
       file,
       label: file,
       kind: "narration",
+      codec: "mp3",
       bytes: size,
       durationSec: 0,
       kbps: 0,
@@ -108,6 +110,7 @@ export async function readBook(ffmpeg: string, book: Book, onClip?: () => void):
       file,
       label: l?.label ?? file,
       kind: l?.kind ?? "narration",
+      codec: info?.codec ?? "mp3",
       bytes: stat.size,
       durationSec: info?.durationSec ?? 0,
       kbps: info?.kbps ?? 0,

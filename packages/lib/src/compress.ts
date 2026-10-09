@@ -2,6 +2,14 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { runFfmpeg } from "./ffmpeg";
+import { encodeOpus } from "./opus";
+import type { Codec } from "./probe";
+
+/** What to compress a clip to. */
+export interface Target {
+  codec: Codec;
+  kbps: number;
+}
 
 /** At or below this bitrate the output is mono: the presets for speech say so, and
  *  spending bits on a second, identical channel of one voice buys nothing. */
@@ -29,21 +37,28 @@ export function ffmpegArgs(src: string, dest: string, targetKbps: number): strin
 }
 
 /**
- * Encode `src` to `dest` at `targetKbps`. `onProgress` gets 0..1, computed from the
- * `out_time_us` lines of `-progress pipe:1` against the clip's known duration.
- * Resolves to the size of the new file, or null when aborted.
+ * Encode the mp3 `src` to `dest` as `target`. `onProgress` gets 0..1: for mp3, computed
+ * from the `out_time_us` lines of `-progress pipe:1` against the clip's known duration;
+ * for Opus, from how much of the source has been read (opus.ts). Resolves to the size of
+ * the new file, or null when aborted.
  */
 export async function compressClip(
-  ffmpeg: string,
+  tools: { ffmpeg: string; opusenc: string | null },
   src: string,
   dest: string,
-  targetKbps: number,
+  target: Target,
   opts: {
     durationSec?: number;
     signal?: AbortSignal;
     onProgress?: (fraction: number) => void;
   } = {},
 ): Promise<number | null> {
+  if (target.codec === "opus") {
+    if (!tools.opusenc) throw new Error("opusenc.exe, which encodes Opus, wasn't found");
+    return encodeOpus(tools.opusenc, src, dest, target.kbps, opts);
+  }
+  const { ffmpeg } = tools;
+  const targetKbps = target.kbps;
   await fs.mkdir(path.dirname(dest), { recursive: true });
   const totalUs = (opts.durationSec ?? 0) * 1e6;
   const r = await runFfmpeg(ffmpeg, ffmpegArgs(src, dest, targetKbps), {

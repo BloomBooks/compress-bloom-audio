@@ -17,6 +17,15 @@ import { getSettings, saveSettings, type Settings } from "./settings";
 import { pickFolder } from "./osShell";
 import { getAppVersion } from "./appVersion";
 import { bloomCollectionsFolder } from "./bloomFolder";
+import type { Target } from "@compress-bloom-audio/lib";
+
+/** The target a request names: `codec` "opus" or (by default) mp3, and a bitrate in the
+ *  range that codec's encoder accepts. Null when the bitrate is missing or out of range. */
+function targetOf(codec: unknown, kbps: unknown): Target | null {
+  const k = Number(kbps);
+  if (codec === "opus") return k >= 6 && k <= 256 ? { codec: "opus", kbps: Math.round(k) } : null;
+  return k >= 8 && k <= 320 ? { codec: "mp3", kbps: Math.round(k) } : null;
+}
 
 function send(res: ServerResponse, status: number, body: unknown) {
   res.statusCode = status;
@@ -71,10 +80,14 @@ function rejectionReason(req: IncomingMessage): string | undefined {
   return undefined;
 }
 
-/** Stream an mp3 with Range support, so the <audio> element can seek. */
+/** Stream a clip with Range support, so the <audio> element can seek. A clip compressed
+ *  to Opus is Ogg inside its .mp3 name, and is served as what it is. */
 async function serveAudio(req: IncomingMessage, res: ServerResponse, file: string) {
   const size = (await fsp.stat(file)).size;
-  res.setHeader("Content-Type", "audio/mpeg");
+  const fh = await fsp.open(file, "r");
+  const magic = Buffer.alloc(4);
+  await fh.read(magic, 0, 4, 0).finally(() => fh.close());
+  res.setHeader("Content-Type", magic.toString("latin1") === "OggS" ? "audio/ogg" : "audio/mpeg");
   res.setHeader("Accept-Ranges", "bytes");
   res.setHeader("Cache-Control", "no-store");
   // A read error (the file removed between stat and open, say) must end this response, not
@@ -177,7 +190,8 @@ export async function handleApiRequest(
       const b = await readBody(req);
       const patch: Partial<Settings> = {};
       if (PRESETS.has(b.preset)) patch.preset = b.preset;
-      if (typeof b.kbps === "number" && b.kbps >= 8 && b.kbps <= 320)
+      if (typeof b.opus === "boolean") patch.opus = b.opus;
+      if (typeof b.kbps === "number" && b.kbps >= 6 && b.kbps <= 320)
         patch.kbps = Math.round(b.kbps);
 
       return send(res, 200, await saveSettings(patch));
@@ -203,10 +217,9 @@ export async function handleApiRequest(
     if (p === "/api/compress" && method === "POST") {
       const b = await readBody(req);
       const ids = Array.isArray(b.bookIds) ? b.bookIds.map(String) : [];
-      const kbps = Number(b.kbps);
-      if (!ids.length || !(kbps >= 8 && kbps <= 320))
-        return send(res, 400, { error: "bookIds and kbps required" });
-      await startCompress(ids, kbps);
+      const t = targetOf(b.codec, b.kbps);
+      if (!ids.length || !t) return send(res, 400, { error: "bookIds and kbps required" });
+      await startCompress(ids, t);
       return send(res, 200, { ok: true });
     }
     if (p === "/api/stop" && method === "POST") {
@@ -215,9 +228,9 @@ export async function handleApiRequest(
     }
     if (p === "/api/preview" && method === "POST") {
       const b = await readBody(req);
-      const kbps = Number(b.kbps);
-      if (!(kbps >= 8 && kbps <= 320)) return send(res, 400, { error: "kbps required" });
-      await preview(String(b.book ?? ""), String(b.file ?? ""), kbps);
+      const t = targetOf(b.codec, b.kbps);
+      if (!t) return send(res, 400, { error: "kbps required" });
+      await preview(String(b.book ?? ""), String(b.file ?? ""), t);
       return send(res, 200, { ok: true });
     }
     if (p === "/api/restore" && method === "POST") {
@@ -234,7 +247,10 @@ export async function handleApiRequest(
         u.searchParams.get("book") ?? "",
         u.searchParams.get("file") ?? "",
         which,
-        Number(u.searchParams.get("kbps")),
+        targetOf(u.searchParams.get("codec"), u.searchParams.get("kbps")) ?? {
+          codec: "mp3",
+          kbps: 0,
+        },
       );
       if (!file) return send(res, 404, { error: "no such clip" });
       return await serveAudio(req, res, file);

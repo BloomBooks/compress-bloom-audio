@@ -95,7 +95,12 @@ export async function readMp3Info(file: string): Promise<AudioInfo | null> {
 
     const tail = await readAt(fh, Math.max(0, size - 128), 128);
     const id3v1 = tail.length === 128 && tail.toString("latin1", 0, 3) === "TAG" ? 128 : 0;
-    const info = { kbps: h.kbps, channels: h.channels, sampleRate: h.sampleRate };
+    const info = {
+      codec: "mp3" as const,
+      kbps: h.kbps,
+      channels: h.channels,
+      sampleRate: h.sampleRate,
+    };
 
     // A Xing ("Xing" for variable bitrate, "Info" for constant) or VBRI tag in the first
     // frame counts the frames, which gives the exact duration.

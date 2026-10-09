@@ -34,6 +34,17 @@ older `app-*` folder), else `ffmpeg` on PATH. Bloom 6.4's build has the mp3 deco
 muxer, the wav demuxer and `libmp3lame`, which is all we use. It has **no ffprobe**, so
 `probe.ts` parses the stderr of `ffmpeg -i <file>`. Don't add an ffprobe dependency.
 
+## Opus
+
+The Opus switch compresses to Ogg Opus, saved under the clip's own `.mp3` name because that
+is how Bloom Player finds a clip. Bloom's ffmpeg can neither encode Opus nor write anything
+an Opus encoder reads (no WAV, no raw PCM), so `lib/src/opus.ts` decodes the mp3 with
+`mpg123-decoder` (WebAssembly, bundled into the lib's dist) and pipes raw PCM into Xiph's
+`opusenc.exe`. The app ships opusenc beside its `node.exe`;
+`packages/app/scripts/ensure-opusenc.mjs` fetches it, pinned by SHA-256, into
+`packages/app/.cache` for the installer build and the dev server. Nothing here decodes
+Opus, so a clip that is already Opus is only ever restored, never re-encoded from itself.
+
 ## Toolchain
 
 - **[Vite+](https://viteplus.dev) (`vp`)** — Vite, Vitest, oxfmt, oxlint. Install once

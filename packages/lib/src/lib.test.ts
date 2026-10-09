@@ -14,6 +14,7 @@ Input #0, mp3, from 'SoundTrack0.mp3':
   Stream #0:0: Audio: mp3 (mp3float), 48000 Hz, stereo, fltp, 128 kb/s
 At least one output file must be specified`;
     expect(parseFfmpegInfo(stderr)).toEqual({
+      codec: "mp3",
       durationSec: 204.79,
       kbps: 128,
       channels: 2,

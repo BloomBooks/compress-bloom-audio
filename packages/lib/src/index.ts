@@ -1,5 +1,5 @@
 export { findFfmpeg, runFfmpeg, type FfmpegResult } from "./ffmpeg";
-export { probeAudio, parseFfmpegInfo, type AudioInfo } from "./probe";
+export { probeAudio, parseFfmpegInfo, type AudioInfo, type Codec } from "./probe";
 export {
   listAudioFiles,
   labelClips,
@@ -20,7 +20,15 @@ export {
   type Book,
   type Collection,
 } from "./collection";
-export { compressClip, estimateBytes, isAlreadyCompressed, ffmpegArgs } from "./compress";
+export {
+  compressClip,
+  estimateBytes,
+  isAlreadyCompressed,
+  ffmpegArgs,
+  type Target,
+} from "./compress";
+export { encodeOpus, findOpusenc } from "./opus";
+export { readOggOpusInfo } from "./oggOpus";
 export {
   BackupStore,
   defaultBackupRoot,

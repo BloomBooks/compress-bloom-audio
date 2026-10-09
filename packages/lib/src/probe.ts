@@ -1,5 +1,6 @@
-/* Reading an audio file's duration, bitrate and channel count. An mp3's own headers
-   usually give all three (mp3Header.ts). Otherwise, since Bloom's ffmpeg has no ffprobe,
+/* Reading an audio file's codec, duration, bitrate and channel count. An mp3's own
+   headers usually give them (mp3Header.ts), and so do the pages of the Ogg Opus files this
+   app writes (oggOpus.ts). Otherwise, since Bloom's ffmpeg has no ffprobe,
    we run `ffmpeg -i <file>` with no output and read the summary it prints to stderr
    before complaining that no output file was given:
 
@@ -7,8 +8,13 @@
      Stream #0:0: Audio: mp3 (mp3float), 48000 Hz, stereo, fltp, 128 kb/s */
 import { runFfmpeg } from "./ffmpeg";
 import { readMp3Info } from "./mp3Header";
+import { readOggOpusInfo } from "./oggOpus";
+
+/** What a clip is encoded as. Either way, its file is named .mp3 (see opus.ts). */
+export type Codec = "mp3" | "opus";
 
 export interface AudioInfo {
+  codec: Codec;
   durationSec: number;
   /** Total bitrate in kbps (all channels), as ffmpeg reports it. */
   kbps: number;
@@ -33,11 +39,14 @@ export function parseFfmpegInfo(stderr: string): AudioInfo | null {
       : layout === "stereo"
         ? 2
         : Number(/(\d+) channels/.exec(layout)?.[1] ?? 2);
-  return { durationSec, kbps, channels, sampleRate: Number(rate?.[1] ?? 0) };
+  const codec: Codec = /^opus\b/.test(audio[1]) ? "opus" : "mp3";
+  return { codec, durationSec, kbps, channels, sampleRate: Number(rate?.[1] ?? 0) };
 }
 
-/** Reads an mp3's own headers when it can, and asks ffmpeg otherwise. */
+/** Reads the file's own headers when it can, and asks ffmpeg otherwise. */
 export async function probeAudio(ffmpeg: string, file: string): Promise<AudioInfo | null> {
+  const opus = await readOggOpusInfo(file).catch(() => null);
+  if (opus) return opus;
   if (file.toLowerCase().endsWith(".mp3")) {
     const info = await readMp3Info(file).catch(() => null);
     if (info) return info;

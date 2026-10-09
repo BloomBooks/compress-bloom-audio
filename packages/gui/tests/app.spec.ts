@@ -87,6 +87,7 @@ async function compressAll(
   page: Page,
   kbps: number,
   message: RegExp = /Compressed \d+ books?, saved/,
+  codec: "mp3" | "opus" = "mp3",
 ) {
   const started = Date.now();
   await page.getByRole("button", { name: /^Compress \d+ books?$/ }).click();
@@ -94,7 +95,8 @@ async function compressAll(
     .poll(
       async () => {
         const s = (await (await page.request.get("/api/startup")).json()).state;
-        return s.phase === "idle" && s.lastCompress?.kbps === kbps && Date.now() - started > 0;
+        const t = s.lastCompress?.target;
+        return s.phase === "idle" && t?.kbps === kbps && t?.codec === codec && Date.now() > started;
       },
       { timeout: 60_000 },
     )
@@ -244,6 +246,78 @@ test("compressing again at another setting starts from the originals", async ({ 
   await expand(page, MOON);
   await expect(clip(page, MOON, "a1.mp3")).toBeVisible();
   await expectSizesFit(page);
+});
+
+test("the Opus switch lowers the presets and estimates, and compresses to Ogg Opus under the .mp3 names", async ({
+  page,
+}) => {
+  const original = await hashes(book(MOON));
+  const originalSizes = await sizes(book(MOON));
+  const saving = page.getByText(/Estimated saving/).locator("..");
+  const mp3Estimate = await saving.textContent();
+
+  const opus = page.getByRole("switch", { name: "Opus" });
+  await opus.click();
+  await expect(opus).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("alert")).toContainText("May not play on iPhones or in Safari");
+  await expect(page.getByRole("note")).toContainText('Files will still be labeled ".mp3"');
+  await expect(page.getByRole("button", { name: /Balanced/ })).toContainText("24 kbps · mono");
+  await expect(page.getByRole("button", { name: /Speech/ })).toContainText("16 kbps · mono");
+  await expect(page.getByRole("button", { name: /High quality/ })).toContainText("48 kbps");
+  // Balanced is now 24 kbps instead of 48, so more would be saved.
+  await expect(saving).not.toHaveText(mp3Estimate!);
+
+  await compressAll(page, 24, /Compressed \d+ books?, saved/, "opus");
+  await expect(row(page, MOON)).toContainText("Compressed");
+  // Same file names, Ogg Opus inside, and smaller than the originals.
+  const after = await sizes(book(MOON));
+  expect(Object.keys(after).sort()).toEqual(Object.keys(originalSizes).sort());
+  for (const f of Object.keys(after)) {
+    const head = (await fs.readFile(path.join(book(MOON).folder, "audio", f))).toString(
+      "latin1",
+      0,
+      4,
+    );
+    expect(head).toBe("OggS");
+    expect(after[f]).toBeLessThan(originalSizes[f]);
+  }
+
+  // The browser plays it, both as what it is and when served as audio/mpeg, the way a
+  // player that goes by the .mp3 name would serve it.
+  const file = Object.keys(after)[0];
+  const url = `/api/audio?book=${encodeURIComponent(MOON)}&file=${file}&which=current&codec=opus&kbps=24`;
+  const res = await page.request.get(url);
+  expect(res.headers()["content-type"]).toBe("audio/ogg");
+  await page.route("**/as-mpeg.mp3", async (route) =>
+    route.fulfill({ body: await res.body(), contentType: "audio/mpeg" }),
+  );
+  for (const u of [url, "/as-mpeg.mp3"]) {
+    const duration = await page.evaluate(
+      (src) =>
+        new Promise<number>((resolve, reject) => {
+          const a = new Audio(src);
+          a.onloadedmetadata = () => resolve(a.duration);
+          a.onerror = () => reject(new Error(`can't play ${src}`));
+        }),
+      u,
+    );
+    expect(duration).toBeGreaterThan(1);
+  }
+
+  // At the same setting there's nothing more to do; turning Opus off offers mp3 again.
+  await tickAll(page);
+  await compressAll(page, 24, /every clip is already at 24 kbps Opus/, "opus");
+  await opus.click();
+  await expect(page.getByRole("button", { name: /Balanced/ })).toContainText("48 kbps · mono");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("note")).toHaveCount(0);
+  await tickAll(page); // the finished run unticked them
+  await expect(row(page, MOON)).toContainText("Ready · from originals");
+
+  await page.getByRole("button", { name: "Restore original audio…" }).click();
+  await page.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(page.getByText("Original audio restored in 2 books")).toBeVisible();
+  expect(await hashes(book(MOON))).toEqual(original);
 });
 
 test("restore leaves a clip alone that was recorded again after compressing", async ({ page }) => {

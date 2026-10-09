@@ -1,18 +1,37 @@
 /* What the screen shows, computed from the server's state plus the choices the user is
    making on this screen (which books are ticked, the target bitrate). Pure, so it can be
    tested without a DOM. The wording follows the design's prototype. */
-import type { Book, Clip, ClipState, EngineState } from "./api";
+import type { Book, Clip, ClipState, EngineState, Target } from "./api";
 
+/** Each preset's bitrate for mp3 and for Opus. Opus sounds about as good at roughly half
+ *  the bitrate, so turning it on lowers every preset. Mono is the encoders' rule:
+ *  64 kbps and below for mp3 (lib/src/compress.ts), 32 and below for Opus (opus.ts). */
 export const PRESETS: {
   id: "speech" | "balanced" | "high";
   label: string;
-  hint: string;
-  kbps: number;
+  mp3: number;
+  opus: number;
 }[] = [
-  { id: "speech", label: "Speech", hint: "24 kbps · mono", kbps: 24 },
-  { id: "balanced", label: "Balanced", hint: "48 kbps · mono", kbps: 48 },
-  { id: "high", label: "High quality", hint: "96 kbps", kbps: 96 },
+  { id: "speech", label: "Speech", mp3: 24, opus: 16 },
+  { id: "balanced", label: "Balanced", mp3: 48, opus: 24 },
+  { id: "high", label: "High quality", mp3: 96, opus: 48 },
 ];
+
+export const presetKbps = (p: (typeof PRESETS)[number], opus: boolean) => (opus ? p.opus : p.mp3);
+
+export function presetHint(p: (typeof PRESETS)[number], opus: boolean): string {
+  const kbps = presetKbps(p, opus);
+  const mono = kbps <= (opus ? 32 : 64);
+  return `${kbps} kbps${mono ? " · mono" : ""}`;
+}
+
+/** "48 kbps", or "24 kbps Opus". */
+export const fmtTarget = (t: Target) => `${t.kbps} kbps${t.codec === "opus" ? " Opus" : ""}`;
+
+/** A target as a name, keying previews. Mirrors `targetKey` in server/engine.ts. */
+export const targetKey = (t: Target) => (t.codec === "opus" ? `opus${t.kbps}` : String(t.kbps));
+
+export const sameTarget = (a: Target, b: Target) => a.codec === b.codec && a.kbps === b.kbps;
 
 export function fmtBytes(bytes: number): string {
   const mb = bytes / (1024 * 1024);
@@ -27,39 +46,41 @@ export function fmtDuration(sec: number): string {
 
 export const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
-/** Compressing this clip to `kbps` would change nothing. Mirrors `plan` in server/engine.ts. */
-export function isUnchanged(c: Clip, kbps: number): boolean {
-  if (c.original) return c.original.currentKbps === kbps;
-  return c.kbps > 0 && c.kbps <= kbps;
+/** Compressing this clip to `t` would change nothing. Mirrors `plan` in server/engine.ts. */
+export function isUnchanged(c: Clip, t: Target): boolean {
+  if (c.original) return c.original.currentKbps === t.kbps && c.codec === t.codec;
+  if (c.codec === "opus") return true;
+  return c.kbps > 0 && c.kbps <= t.kbps;
 }
 
-/** The clip's size at `kbps`, estimated from its original when we keep one. */
-export function estimateAfter(c: Clip, kbps: number): number {
-  if (isUnchanged(c, kbps)) return c.bytes;
+/** The clip's size at `t`, estimated from its original when we keep one. Either encoder
+ *  holds close to the bitrate it is given, so the size scales with the bitrate. */
+export function estimateAfter(c: Clip, t: Target): number {
+  if (isUnchanged(c, t)) return c.bytes;
   const base = c.original ?? { bytes: c.bytes, kbps: c.kbps };
-  if (!base.kbps || base.kbps <= kbps) return base.bytes;
-  return Math.round((base.bytes * kbps) / base.kbps);
+  if (!base.kbps || base.kbps <= t.kbps) return base.bytes;
+  return Math.round((base.bytes * t.kbps) / base.kbps);
 }
 
 /** The clip's size after compressing: actual once compressed, else a preview's, else estimated. */
 export function clipAfter(
   c: Clip,
   s: ClipState | undefined,
-  kbps: number,
+  t: Target,
   previewBytes: number | undefined,
 ): { bytes: number; actual: boolean } {
   if (s?.status === "done" || s?.status === "skipped")
     return { bytes: s.afterBytes ?? c.bytes, actual: true };
   if (s?.status === "failed") return { bytes: c.bytes, actual: true };
-  if (isUnchanged(c, kbps)) return { bytes: c.bytes, actual: true };
+  if (isUnchanged(c, t)) return { bytes: c.bytes, actual: true };
   if (previewBytes !== undefined) return { bytes: previewBytes, actual: true };
-  return { bytes: estimateAfter(c, kbps), actual: false };
+  return { bytes: estimateAfter(c, t), actual: false };
 }
 
 /** The last run covered this book at this bitrate: its row says "Compressed". */
-export function wasJustCompressed(st: EngineState, bookId: string, kbps: number): boolean {
+export function wasJustCompressed(st: EngineState, bookId: string, t: Target): boolean {
   const lc = st.lastCompress;
-  return !!lc && st.phase !== "running" && lc.kbps === kbps && lc.bookIds.includes(bookId);
+  return !!lc && st.phase !== "running" && sameTarget(lc.target, t) && lc.bookIds.includes(bookId);
 }
 
 const finished = (s: ClipState | undefined) =>
@@ -84,9 +105,9 @@ export interface BookRow {
   statusTone: "muted" | "subtle" | "text" | "green" | "red";
 }
 
-export function bookRow(book: Book, st: EngineState, selected: boolean, kbps: number): BookRow {
+export function bookRow(book: Book, st: EngineState, selected: boolean, target: Target): BookRow {
   const inJob = !!st.job?.bookIds.includes(book.id);
-  const k = inJob ? st.job!.kbps : kbps;
+  const k = inJob ? st.job!.target : target;
   let current = 0;
   let original = 0;
   let after = 0;
@@ -94,10 +115,10 @@ export function bookRow(book: Book, st: EngineState, selected: boolean, kbps: nu
   let actual = true;
   let anyFailed = false;
   let running = false;
-  const just = wasJustCompressed(st, book.id, kbps);
+  const just = wasJustCompressed(st, book.id, target);
   for (const c of book.clips) {
     const s = inJob ? st.clips[`${book.id}/${c.file}`] : undefined;
-    const a = clipAfter(c, s, k, st.previews[`${book.id}/${c.file}@${k}`]);
+    const a = clipAfter(c, s, k, st.previews[`${book.id}/${c.file}@${targetKey(k)}`]);
     current += c.bytes;
     original += c.original?.bytes ?? c.bytes;
     after += a.bytes;
@@ -108,7 +129,7 @@ export function bookRow(book: Book, st: EngineState, selected: boolean, kbps: nu
   }
   const allUnchanged = book.clips.every((c) => isUnchanged(c, k));
   const wasCompressed = book.clips.some((c) => c.original);
-  const unchangedLabel = wasCompressed ? `Already at ${k} kbps` : "Already small";
+  const unchangedLabel = wasCompressed ? `Already at ${fmtTarget(k)}` : "Already small";
   const progress = current ? done / current : 0;
   let status: string;
   let statusTone: BookRow["statusTone"] = "muted";

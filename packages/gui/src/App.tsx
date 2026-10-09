@@ -3,11 +3,23 @@
    restore) and pushes its state; this component owns only what the user is choosing right
    now — ticked books, quality, expanded rows, the clip playing. */
 import React from "react";
-import { api, pickFolder, subscribeState, type Book, type EngineState, type Settings } from "./api";
+import {
+  api,
+  pickFolder,
+  subscribeState,
+  type Book,
+  type EngineState,
+  type Settings,
+  type Target,
+} from "./api";
 import { Button, Checkbox, Chevron } from "./components/primitives";
 import { COLUMNS, COLUMN_GAP, HeaderCell, useColumnWidths } from "./components/columns";
 import {
   PRESETS,
+  fmtTarget,
+  presetHint,
+  presetKbps,
+  targetKey,
   TONE_COLOR,
   bookRow,
   clipAfter,
@@ -40,13 +52,13 @@ function useAudioPlayer() {
   }, []);
   /** Play a clip, or stop it if it is the one already playing. */
   const toggle = React.useCallback(
-    (book: Book, file: string, which: Which, kbps: number, dur: number) => {
+    (book: Book, file: string, which: Which, t: Target, dur: number) => {
       const key = `${book.id}/${file}`;
       const same = playing && playing.key === key && playing.which === which;
       audio.current?.pause();
       audio.current = null;
       if (same) return setPlaying(null);
-      const a = new Audio(api.audioUrl(book.id, file, which, kbps));
+      const a = new Audio(api.audioUrl(book.id, file, which, t));
       audio.current = a;
       setPlaying({ key, which, t: 0, dur });
       a.ontimeupdate = () =>
@@ -129,6 +141,9 @@ export function App() {
   const ph = state.phase;
   const locked = ph !== "idle";
   const kbps = settings.kbps;
+  const target: Target = { codec: settings.opus ? "opus" : "mp3", kbps };
+  // The custom bitrate's range: opusenc goes lower than LAME, and needs less at the top.
+  const range = settings.opus ? { min: 8, max: 64, step: 4 } : { min: 16, max: 128, step: 8 };
   // A collection being opened, as opposed to the open one being read again after a
   // compress or restore. Its predecessor's rows would be stale, so they are hidden.
   const loadingCollection =
@@ -155,7 +170,7 @@ export function App() {
     updateSettings(patch);
   };
 
-  const rows: BookRow[] = books.map((b) => bookRow(b, state, selected.has(b.id), kbps));
+  const rows: BookRow[] = books.map((b) => bookRow(b, state, selected.has(b.id), target));
   const totalRows = rows.filter((r) =>
     state.job ? state.job.bookIds.includes(r.book.id) : selected.has(r.book.id),
   );
@@ -308,7 +323,7 @@ export function App() {
               return (
                 <button
                   key={p.id}
-                  onClick={() => pickKbps({ preset: p.id, kbps: p.kbps })}
+                  onClick={() => pickKbps({ preset: p.id, kbps: presetKbps(p, settings.opus) })}
                   disabled={locked}
                   aria-pressed={on}
                   style={{
@@ -349,11 +364,26 @@ export function App() {
                     <span style={{ fontSize: 14, fontWeight: 600, color: "var(--app-text)" }}>
                       {p.label}
                     </span>
-                    <span style={{ fontSize: 12, color: "var(--app-text-muted)" }}>{p.hint}</span>
+                    <span style={{ fontSize: 12, color: "var(--app-text-muted)" }}>
+                      {presetHint(p, settings.opus)}
+                    </span>
                   </span>
                 </button>
               );
             })}
+            <OpusSwitch
+              on={settings.opus}
+              available={!!state.opusenc}
+              disabled={locked}
+              onChange={(on) => {
+                const p = PRESETS.find((x) => x.id === settings.preset);
+                const r = on ? { min: 8, max: 64 } : { min: 16, max: 128 };
+                pickKbps({
+                  opus: on,
+                  kbps: p ? presetKbps(p, on) : Math.min(r.max, Math.max(r.min, kbps)),
+                });
+              }}
+            />
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -383,21 +413,22 @@ export function App() {
                   <label htmlFor="kbps" style={{ color: "var(--app-text-muted)" }}>
                     Bitrate
                   </label>
-                  <span style={{ fontWeight: 600 }}>{kbps} kbps</span>
+                  <span style={{ fontWeight: 600 }}>{fmtTarget(target)}</span>
                 </div>
                 <input
                   id="kbps"
                   type="range"
-                  min={16}
-                  max={128}
-                  step={8}
+                  min={range.min}
+                  max={range.max}
+                  step={range.step}
                   value={kbps}
                   disabled={locked}
                   onChange={(e) => {
                     const v = Number(e.target.value);
                     pickKbps({
                       kbps: v,
-                      preset: PRESETS.find((p) => p.kbps === v)?.id ?? "custom",
+                      preset:
+                        PRESETS.find((p) => presetKbps(p, settings.opus) === v)?.id ?? "custom",
                     });
                   }}
                   style={{ width: "100%", accentColor: "var(--sil-blue)" }}
@@ -410,8 +441,8 @@ export function App() {
                     color: "var(--app-text-subtle)",
                   }}
                 >
-                  <span>16 · smaller</span>
-                  <span>128 · clearer</span>
+                  <span>{range.min} · smaller</span>
+                  <span>{range.max} · clearer</span>
                 </div>
               </div>
             )}
@@ -529,7 +560,7 @@ export function App() {
               const inJob = !!state.job?.bookIds.includes(b.id);
               const showAfter =
                 selected.has(b.id) || inJob || !!state.lastCompress?.bookIds.includes(b.id);
-              const k = inJob ? state.job!.kbps : kbps;
+              const k = inJob ? state.job!.target : target;
               return (
                 <div key={b.id} data-book={b.id}>
                   <div
@@ -651,7 +682,7 @@ export function App() {
                         const s = inJob ? state.clips[key] : undefined;
                         const doneInRun = ph === "running" && s?.status === "done";
                         const unchanged = isUnchanged(c, k);
-                        const previewBytes = state.previews[`${key}@${k}`];
+                        const previewBytes = state.previews[`${key}@${targetKey(k)}`];
                         const a = clipAfter(c, s, k, previewBytes);
                         const encoding = state.encoding === key;
                         const p = player.playing?.key === key ? player.playing : null;
@@ -832,14 +863,14 @@ export function App() {
                 style={{ fontSize: 13, color: "var(--app-text-muted)", textAlign: "right" }}
               >
                 {state.lastCompress.books === 0
-                  ? `Nothing to compress: every clip is already at ${state.lastCompress.kbps} kbps or smaller.`
+                  ? `Nothing to compress: every clip is already at ${fmtTarget(state.lastCompress.target)} or smaller.`
                   : `${state.lastCompress.stopped ? "Stopped. " : ""}Compressed ${plural(state.lastCompress.books, "book")}, saved ${fmtBytes(state.lastCompress.savedBytes)}.`}
               </span>
             )}
             {ph !== "running" && (
               <Button
                 disabled={!nSel || ph !== "idle" || !state.ffmpeg || !!state.encoding}
-                onClick={() => run(api.compress([...selected], kbps))}
+                onClick={() => run(api.compress([...selected], target))}
               >
                 Compress {plural(nSel, "book")}
               </Button>
@@ -922,6 +953,156 @@ function Num({
     </div>
   );
 }
+/** Compress to Opus instead of mp3. The files keep their .mp3 names, which is how Bloom
+ *  Player finds them, so only players that look at the bytes play them. */
+function OpusSwitch({
+  on,
+  available,
+  disabled,
+  onChange,
+}: {
+  on: boolean;
+  available: boolean;
+  disabled: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  // Turning it off is always allowed; turning it on needs the encoder.
+  const off = disabled || (!on && !available);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+      <button
+        role="switch"
+        aria-checked={on}
+        disabled={off}
+        title={available ? undefined : "opusenc.exe, which encodes Opus, wasn't found"}
+        onClick={() => onChange(!on)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "4px 0",
+          border: "none",
+          background: "none",
+          fontFamily: "var(--app-font)",
+          fontSize: 14,
+          fontWeight: 600,
+          color: "var(--app-text)",
+          cursor: off ? "default" : "pointer",
+          opacity: off && !disabled ? 0.55 : 1,
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            width: 32,
+            height: 18,
+            borderRadius: 9,
+            flex: "none",
+            position: "relative",
+            background: on ? "var(--sil-blue)" : "var(--app-border-strong)",
+            transition: "background 120ms",
+          }}
+        >
+          <span
+            style={{
+              position: "absolute",
+              top: 2,
+              left: on ? 16 : 2,
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              background: "var(--app-surface)",
+              transition: "left 120ms",
+            }}
+          />
+        </span>
+        Opus
+      </button>
+      <span style={{ fontSize: 12, color: "var(--app-text-muted)" }}>
+        {available
+          ? "Smaller files at the same quality."
+          : "Not available: opusenc.exe wasn't found."}
+      </span>
+      {on && (
+        <>
+          <Notice tone="warning">
+            May not play on iPhones or in Safari. Plays in Bloom and Bloom Reader.
+          </Notice>
+          <Notice tone="info">
+            Files will still be labeled ".mp3" so that BloomPlayer will play them.
+          </Notice>
+        </>
+      )}
+    </div>
+  );
+}
+
+const NOTICE_TONES = {
+  warning: {
+    role: "alert",
+    line: "var(--sil-red)",
+    fill: "var(--sil-red-10)",
+    text: "var(--sil-red-dark)",
+  },
+  info: {
+    role: "note",
+    line: "var(--sil-blue)",
+    fill: "var(--sil-blue-10)",
+    text: "var(--sil-blue-dark)",
+  },
+} as const;
+
+/** A boxed note with an icon: red with a warning sign, or blue with an "i". */
+function Notice({
+  tone,
+  children,
+}: {
+  tone: keyof typeof NOTICE_TONES;
+  children: React.ReactNode;
+}) {
+  const t = NOTICE_TONES[tone];
+  return (
+    <div
+      role={t.role}
+      style={{
+        display: "flex",
+        gap: 8,
+        alignItems: "flex-start",
+        marginTop: 4,
+        padding: "8px 10px",
+        borderRadius: "var(--app-radius-sm)",
+        border: `1px solid ${t.line}`,
+        background: t.fill,
+        color: t.text,
+        fontSize: 12,
+      }}
+    >
+      <svg
+        aria-hidden
+        width={16}
+        height={16}
+        viewBox="0 0 16 16"
+        style={{ flex: "none", marginTop: 1 }}
+      >
+        {tone === "warning" ? (
+          <>
+            <path d="M8 1.5 15 14H1L8 1.5Z" fill={t.line} />
+            <path d="M8 6v4" stroke="white" strokeWidth={1.6} strokeLinecap="round" />
+            <circle cx={8} cy={12} r={0.9} fill="white" />
+          </>
+        ) : (
+          <>
+            <circle cx={8} cy={8} r={7} fill={t.line} />
+            <path d="M8 7.2v4.3" stroke="white" strokeWidth={1.6} strokeLinecap="round" />
+            <circle cx={8} cy={4.6} r={0.9} fill="white" />
+          </>
+        )}
+      </svg>
+      <span>{children}</span>
+    </div>
+  );
+}
+
 /** Above the rows while books are being read: how many clips so far, out of how many. */
 function ScanProgress({ progress }: { progress: EngineState["scanProgress"] }) {
   const total = progress?.total ?? 0;

@@ -19,6 +19,9 @@
     "test": "vp test run",
     "dev": "vp build --watch"
   },
+  "dependencies": {
+    "mpg123-decoder": "1.0.3"
+  },
   "devDependencies": {
     "@types/node": "^22.15.24",
     "typescript": "^5.8.3",
