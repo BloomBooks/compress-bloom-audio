@@ -1,0 +1,43 @@
+name: CI
+
+# Cheap, fast feedback on every push to master and every PR. Non-blocking by policy
+# (we allow direct commits) — it just surfaces breakage.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install Vite+ CLI
+        run: npm install -g vite-plus-cli
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (lib → gui)
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Format + lint + type-check
+        # Via the npm script so it uses the repo's pinned local `vp`
+        # (node_modules/.bin), not a global vite-plus-cli that may lack `check`.
+        run: pnpm run check

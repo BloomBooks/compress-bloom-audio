@@ -1,0 +1,14 @@
+# pnpm
+node_modules/
+.pnpm-store/
+
+# Vite+ task cache
+.vite/cache/
+
+dist/
+
+test-output/
+test-outputs/
+
+# Git Bash crash dumps
+bash.exe.stackdump

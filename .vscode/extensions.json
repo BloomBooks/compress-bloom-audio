@@ -1,0 +1,6 @@
+{
+  // Recommended extensions for this project. The Vite+ extension pack provides
+  // the oxc formatter (oxc.oxc-vscode) used for format-on-save, matching the
+  // pre-commit hook. VS Code will prompt to install these on first open.
+  "recommendations": ["VoidZero.vite-plus-extension-pack"]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@compress-bloom-audio/app",
+  "version": "0.1.3",
+  "private": true,
+  "description": "Bloom Audio Compressor — Neutralino desktop app wrapping the GUI",
+  "license": "MIT",
+  "scripts": {
+    "setup": "npx --yes @neutralinojs/neu@latest update",
+    "ensure-framework": "node scripts/ensure-framework.mjs",
+    "sync-version": "node scripts/sync-version.mjs",
+    "gen-icons": "node scripts/gen-icons.mjs",
+    "build:backend": "pnpm --filter @compress-bloom-audio/lib build && pnpm --filter @compress-bloom-audio/gui build && pnpm --filter @compress-bloom-audio/gui build:server",
+    "dev": "pnpm run ensure-framework && pnpm run sync-version && npx --yes @neutralinojs/neu@latest run --disable-auto-reload",
+    "dev:built": "pnpm run ensure-framework && pnpm run sync-version && pnpm run build:backend && npx --yes @neutralinojs/neu@latest run --disable-auto-reload",
+    "build:win": "node scripts/build-installer.mjs"
+  }
+}
